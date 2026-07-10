@@ -67,10 +67,10 @@ class Live2DModel:
             # 根据 mood 播放对应 motion
             if mood in ("happy", "curious"):
                 # 眯眼 motion
-                self.model.StartMotion("A_0", 0, live2d.MotionPriority.NORMAL)
+                self.model.StartMotion("Idle", 0, live2d.MotionPriority.NORMAL)
             elif mood in ("annoyed", "angry"):
                 # 生气 motion
-                self.model.StartMotion("B_0", 0, live2d.MotionPriority.NORMAL)
+                self.model.StartMotion("Angry", 0, live2d.MotionPriority.NORMAL)
             elif mood == "sad" or mood == "melancholy":
                 # 可扩展，暂无对应 motion
                 pass
@@ -158,7 +158,7 @@ class Live2DWidget(QOpenGLWidget):
         self._dragging_window = False
         self._drag_start_global_pos = None
 
-        self.resize(420, 660)
+        self.resize(400, 660)
         
         # 3. 【删除】这行代码，否则鼠标事件无法触发
         # self.setAttribute(Qt.WA_TransparentForMouseEvents, True) 
@@ -312,10 +312,10 @@ class Live2DWidget(QOpenGLWidget):
                 # 移动距离小于 8px 视为点击
                 if dist < 8:
                     if py < self.height() * 0.5:
-                        self.l2d.model.StartMotion("A_0", 0, live2d.MotionPriority.FORCE)
+                        self.l2d.model.StartMotion("Idle", 0, live2d.MotionPriority.FORCE)
                         self.head_patted.emit()
                     else:
-                        self.l2d.model.StartMotion("B_0", 0, live2d.MotionPriority.FORCE)
+                        self.l2d.model.StartMotion("Angry", 0, live2d.MotionPriority.FORCE)
                         self.tail_patted.emit()
             
             # 4. 清空按下位置

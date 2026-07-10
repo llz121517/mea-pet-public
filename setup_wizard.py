@@ -312,12 +312,17 @@ class EnvCheckPage(QFrame):
         self.total_status.setStyleSheet("font-size: 12px; color: #888;")
         self.layout.addWidget(self.total_status)
 
-        self.layout.addStretch()
+        self.layout.addSpacing(8)
 
         # 日志输出
+        log_title = QLabel("📋 安装日志")
+        log_title.setStyleSheet("font-size: 11px; color: #888; padding-top: 4px;")
+        self.layout.addWidget(log_title)
+
         self.log_area = QTextEdit()
         self.log_area.setReadOnly(True)
-        self.log_area.setMaximumHeight(120)
+        self.log_area.setMaximumHeight(200)
+        self.log_area.setMinimumHeight(80)
         self.log_area.setStyleSheet("""
             QTextEdit {
                 background: rgba(0,0,0,80);
@@ -329,7 +334,6 @@ class EnvCheckPage(QFrame):
                 font-family: Consolas, monospace;
             }
         """)
-        self.log_area.hide()
         self.layout.addWidget(self.log_area)
 
         self._installing = False
@@ -765,10 +769,92 @@ class TTSPage(QFrame):
         self.enable_cb.toggled.connect(self._toggle)
         layout.addWidget(self.enable_cb)
 
-        # GPT-SoVITS 状态 + 安装指南
+        # ═══ 语音后端选择 ═══
+        backend_label = QLabel("选择语音引擎：")
+        backend_label.setStyleSheet("font-size: 13px; color: #ccc; margin-top: 6px;")
+        layout.addWidget(backend_label)
+
+        self.backend_combo = QComboBox()
+        self.backend_combo.addItem("VITS（轻量快速，无需整合包，效果勉强能用）", "vits")
+        self.backend_combo.addItem("GPT-SoVITS（效果超好，需要整合包，推理慢）", "gpt_sovits")
+        self.backend_combo.setStyleSheet(f"""
+            QComboBox {{
+                background: rgba(0,0,0,100); color: white;
+                border: 1px solid rgba(255,255,255,30);
+                border-radius: 8px; padding: 8px 14px; font-size: 14px;
+            }}
+            QComboBox::drop-down {{
+                border: none; width: 30px;
+            }}
+            QComboBox:hover {{
+                border: 1px solid {COLOR_ACCENT};
+            }}
+            QComboBox QAbstractItemView {{
+                background: #2a2a4e; color: white;
+                selection-background-color: #ff6b9d;
+            }}
+        """)
+        self.backend_combo.currentIndexChanged.connect(self._toggle_backend)
+        layout.addWidget(self.backend_combo)
+
+        # VITS Python 路径（VITS 模式显示）
+        self.vits_python_frame = QFrame()
+        vpy_layout = QHBoxLayout(self.vits_python_frame)
+        vpy_layout.setContentsMargins(0, 0, 0, 0)
+        vpy_label = QLabel("VITS Python 路径：")
+        vpy_label.setStyleSheet("font-size: 12px; color: #888;")
+        vpy_layout.addWidget(vpy_label)
+        self.vits_python_input = QLineEdit()
+        _default_vits_py = os.path.join(
+            os.path.expanduser("~"),
+            ".conda", "envs", "vits_ft", "python.exe"
+        )
+        if os.path.isfile(_default_vits_py):
+            self.vits_python_input.setText(_default_vits_py)
+        self.vits_python_input.setPlaceholderText("用于 VITS 推理的 Python（需含 PyTorch CUDA）")
+        self.vits_python_input.setStyleSheet(STYLE_INPUT)
+        vpy_layout.addWidget(self.vits_python_input)
+        vits_browse_btn = QPushButton("📂")
+        vits_browse_btn.setFixedWidth(36)
+        vits_browse_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255,255,255,15); color: #F0F0F0;
+                border: 1px solid rgba(255,255,255,30);
+                border-radius: 6px; font-size: 14px;
+            }
+            QPushButton:hover { background: rgba(255,255,255,25); }
+        """)
+        vits_browse_btn.clicked.connect(lambda: self._browse_python(self.vits_python_input))
+        vpy_layout.addWidget(vits_browse_btn)
+        layout.addWidget(self.vits_python_frame)
+
+        # VITS 模型状态
+        self.vits_status = QLabel("")
+        self.vits_status.setStyleSheet("font-size: 12px; color: #888; padding-left: 30px;")
+        layout.addWidget(self.vits_status)
+
+        # VITS 环境安装按钮
+        self.setup_vits_btn = QPushButton("⚙️ 自动配置 VITS 环境（首次使用点我）")
+        self.setup_vits_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255,182,193,30);
+                color: #FFB6C1;
+                border: 1px solid rgba(255,182,193,40);
+                border-radius: 8px; padding: 10px 16px; font-size: 13px;
+            }
+            QPushButton:hover { background: rgba(255,182,193,45); }
+            QPushButton:disabled { background: transparent; color: #555; border: 1px solid transparent; }
+        """)
+        self.setup_vits_btn.clicked.connect(self._setup_vits_env)
+        layout.addWidget(self.setup_vits_btn)
+
+        # GSV 相关控件容器（GPT-SoVITS 模式显示）
+        self.gsv_container = QFrame()
+        gsv_layout = QVBoxLayout(self.gsv_container)
+        gsv_layout.setContentsMargins(0, 0, 0, 0)
         self.gsv_status = QLabel("")
         self.gsv_status.setStyleSheet("font-size: 12px; padding-left: 30px;")
-        layout.addWidget(self.gsv_status)
+        gsv_layout.addWidget(self.gsv_status)
 
         guide_btn = QPushButton("❓ 语音功能需要额外装一个东西，点我查看")
         guide_btn.setStyleSheet("""
@@ -788,12 +874,12 @@ class TTSPage(QFrame):
             }
         """)
         guide_btn.clicked.connect(self._show_gsv_guide)
-        layout.addWidget(guide_btn)
+        gsv_layout.addWidget(guide_btn)
 
         # GPT-SoVITS 整合包目录选择
         gsv_label = QLabel("选整合包解压后的文件夹（会自动识别 python.exe）：")
         gsv_label.setStyleSheet("font-size: 12px; color: #888; margin-top: 8px;")
-        layout.addWidget(gsv_label)
+        gsv_layout.addWidget(gsv_label)
 
         path_row = QHBoxLayout()
         self.gsv_dir_input = QLineEdit()
@@ -813,9 +899,13 @@ class TTSPage(QFrame):
         browse_btn.setFixedWidth(100)
         browse_btn.clicked.connect(self._browse_gsv_dir)
         path_row.addWidget(browse_btn)
-        layout.addLayout(path_row)
+        gsv_layout.addLayout(path_row)
 
         QTimer.singleShot(300, self._check_gsv)
+        layout.addWidget(self.gsv_container)
+
+        # 初始调用后端切换（默认 VITS 模式）
+        QTimer.singleShot(100, self._toggle_backend)
 
         layout.addWidget(QLabel(
             "语音模型已打包，开箱即用。",
@@ -913,8 +1003,8 @@ class TTSPage(QFrame):
             "<hr>"
             "<h4>👇 跟着这几步做：</h4>"
             "<p><b>1. 下整合包</b><br>"
-            "去 <a href='https://www.yuque.com/baicai-1145/gpt-sovits/glvg99syb6q9mvtq'>GPT-SoVITS 发布页</a><br>"
-            "下载最新版整合包（.7z 压缩包）</p>"
+            "去 <a href='https://pan.quark.cn/s/d2bb86ae6462'>GPT-SoVITS 整合包</a><br>"
+            "下载最新版整合包</p>"
             "<p><b>2. 解压</b><br>"
             "解压到你喜欢的位置，比如：<br>"
             "<code>D:\GPT-SoVITS-v2pro-20250604\</code></p>"
@@ -930,14 +1020,14 @@ class TTSPage(QFrame):
             "<p style='color:#888; font-size:12px;'>"
             "模型文件已打包在项目里，不需要额外下载。</p>"
         )
-        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QTextEdit, QHBoxLayout
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QTextBrowser, QHBoxLayout
         dialog = QDialog(self)
         dialog.setWindowTitle("语音功能怎么装")
         dialog.setMinimumSize(520, 520)
         dialog.setStyleSheet("background: #1a1a2e; color: #F0F0F0;")
         dl = QVBoxLayout(dialog)
-        text = QTextEdit()
-        text.setReadOnly(True)
+        text = QTextBrowser()
+        text.setOpenExternalLinks(True)
         text.setHtml(guide)
         text.setStyleSheet("""
             QTextEdit {
@@ -971,8 +1061,328 @@ class TTSPage(QFrame):
 
     # ─── 跨线程信号槽（在主线程执行） ───
 
+    def log(self, msg):
+        """日志输出（TTSPage 版本）"""
+        # 输出到 stderr 让终端可见
+        import sys as _sys
+        print(f"[VITS] {msg}", file=_sys.stderr, flush=True)
+        # 如果有父窗口的日志区也写一份
+        parent = self.parent()
+        while parent:
+            if hasattr(parent, 'log'):
+                parent.log(msg)
+                return
+            parent = parent.parent()
+
     def _toggle(self, on):
+        """语音启用/禁用"""
         self.translate_frame.setVisible(on and self.enable_cb.isChecked())
+        self.backend_combo.setEnabled(on)
+        self.vits_python_input.setEnabled(on)
+        self.gsv_dir_input.setEnabled(on)
+        if on:
+            self._toggle_backend()
+
+    def _toggle_backend(self):
+        """切换语音后端：VITS / GPT-SoVITS"""
+        is_vits = self.backend_combo.currentData() == "vits"
+        if hasattr(self, 'vits_python_frame'):
+            self.vits_python_frame.setVisible(is_vits)
+            self.vits_status.setVisible(is_vits)
+            self.setup_vits_btn.setVisible(is_vits)
+            self.gsv_container.setVisible(not is_vits)
+        if is_vits:
+            self._check_vits()
+
+    def _browse_python(self, input_field):
+        dir_path = QFileDialog.getOpenFileName(
+            self, "选择 python.exe", "", "python.exe (python.exe)"
+        )[0]
+        if dir_path:
+            input_field.setText(dir_path)
+
+    def _check_vits(self):
+        """检查 VITS 模型是否就绪"""
+        base = os.path.dirname(os.path.abspath(__file__))
+        model_path = os.path.join(base, "vits_models", "G_latest.pth")
+        config_path = os.path.join(base, "vits_models", "finetune_speaker.json")
+        if os.path.exists(model_path) and os.path.exists(config_path):
+            model_size = os.path.getsize(model_path) / 1e6
+            self.vits_status.setText(f"✅ VITS 模型就绪（{model_size:.0f} MB）")
+            self.vits_status.setStyleSheet("font-size: 12px; color: #7dffb3; padding-left: 30px;")
+        else:
+            self.vits_status.setText("⚠️ VITS 模型文件缺失（运行引导将自动下载）")
+            self.vits_status.setStyleSheet("font-size: 12px; color: #ff6b6b; padding-left: 30px;")
+
+    def _setup_vits_env(self):
+        """自动检测/创建 VITS Python 环境"""
+        import sys as _sys, subprocess, threading, os as _os
+        base = os.path.dirname(os.path.abspath(__file__))
+        log = lambda msg: QTimer.singleShot(0, lambda: self.log(msg)) if hasattr(self, 'log') else None
+
+        # ── 构建干净的环境（去掉 PYTHONPATH 避免污染其他 Python 的子进程） ──
+        _clean_env = _os.environ.copy()
+        _clean_env.pop("PYTHONPATH", None)
+        _clean_env.pop("PYTHONHOME", None)
+
+        def _check_torch(py_exe: str) -> tuple[bool, str]:
+            """检查指定 Python 能否 import torch，返回 (成功, 版本或错误信息)"""
+            try:
+                r = subprocess.run(
+                    [py_exe, "-c", "import torch; print(torch.__version__)"],
+                    capture_output=True, text=True, timeout=15,
+                    env=_clean_env  # 关键修复：用干净环境防止 PYTHONPATH 污染
+                )
+                if r.returncode == 0 and r.stdout.strip():
+                    return True, r.stdout.strip()
+                return False, r.stderr[:100]
+            except Exception as e:
+                return False, str(e)
+
+        def _pip_install_deps(py_exe: str, desc_prefix: str = "") -> bool:
+            """给指定 Python 装 VITS 依赖（不含 torch，装完再装 torch）"""
+            ok = True
+            # VITS requirements（不含 torch/torchaudio）
+            req_path = _os.path.join(base, "vits_requirements.txt")
+            with open(req_path, "r", encoding="utf-8") as f:
+                raw_lines = []
+                for _l in f:
+                    _stripped = _l.strip()
+                    if not _stripped or _stripped.startswith("#"):
+                        continue
+                    if _stripped.lower().startswith("torch"):
+                        continue
+                    raw_lines.append(_stripped)
+                req_lines = raw_lines
+            if req_lines:
+                log(f"{desc_prefix}安装 VITS 依赖包（{len(req_lines)} 个）…")
+                rc = _pip_run(py_exe, req_lines + ["-i",
+                    "https://pypi.tuna.tsinghua.edu.cn/simple"], timeout_sec=600)
+                if rc != 0:
+                    log(f"{desc_prefix}⚠ pip 部分失败，继续…")
+                    ok = False
+            # PyTorch
+            wheels_dir = _os.path.join(base, "wheels")
+            torch_whl = None
+            torchaudio_whl = None
+            if _os.path.isdir(wheels_dir):
+                for f in _os.listdir(wheels_dir):
+                    if f.endswith(".whl"):
+                        if "torch-" in f and "torchaudio" not in f:
+                            torch_whl = _os.path.join(wheels_dir, f)
+                        elif "torchaudio" in f:
+                            torchaudio_whl = _os.path.join(wheels_dir, f)
+            if torch_whl and torchaudio_whl:
+                log(f"{desc_prefix}本地 .whl 安装 PyTorch…")
+                _pip_run(py_exe, [torch_whl, torchaudio_whl], timeout_sec=300)
+            else:
+                tsinghua_torch = "https://mirrors.tuna.tsinghua.edu.cn/pytorch/whl/cpu"
+                log(f"{desc_prefix}清华镜像下载 PyTorch（约 200MB）…")
+                _pip_run(py_exe, ["torch", "torchaudio",
+                         "--index-url", tsinghua_torch,
+                         "--extra-index-url", "https://pypi.tuna.tsinghua.edu.cn/simple"],
+                        timeout_sec=900)
+            return ok
+
+        def _pip_run(py_exe: str, args: list, timeout_sec: int = 600) -> int:
+            """通用 pip install（实时输出+超时保护，干净环境）"""
+            _pip_env = _clean_env.copy()
+            _pip_env["PYTHONUNBUFFERED"] = "1"  # 关掉子进程缓冲，每行实时可见
+            proc = subprocess.Popen(
+                [py_exe, "-m", "pip", "install", "--timeout", "120"] + args,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                bufsize=1, encoding="utf-8", errors="replace",
+                env=_pip_env
+            )
+
+            # ── 后台 reader 线程：逐行读取，实时输出到日志 ──
+            _last_pct = -1  # 限频：进度百分比只输出变化时
+
+            def _reader():
+                nonlocal _last_pct
+                for _raw in proc.stdout:
+                    _line = _raw.strip()
+                    if not _line:
+                        continue
+                    # 下载进度条限频（每变化 >=2% 才输出，省得刷屏）
+                    _m = __import__('re').search(r'(\d+)%', _line)
+                    if _m:
+                        _pct = int(_m.group(1))
+                        if _pct - _last_pct >= 2:
+                            _last_pct = _pct
+                            QTimer.singleShot(0, lambda l=_line: log(f"    {l}"))
+                        continue
+                    # 非进度行直接输出
+                    QTimer.singleShot(0, lambda l=_line: log(f"    {l}"))
+
+            _reader_thread = threading.Thread(target=_reader, daemon=True)
+            _reader_thread.start()
+
+            # ── 主线程：超时控制 ──
+            try:
+                proc.wait(timeout=timeout_sec)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                QTimer.singleShot(0, lambda: log("  ❌ 超时（>{}s），pip 安装中断".format(timeout_sec)))
+                return 1
+
+            _reader_thread.join(timeout=5)  # 等 reader 读完残存输出
+            return proc.returncode
+
+        # ═══════════════════════════════════════════════════
+        # 按速度排序，逐级尝试可用的 Python 环境
+        # ═══════════════════════════════════════════════════
+
+        # 0️⃣ 当前 Python（Hermes venv，最快）
+        ver_ok, ver_info = _check_torch(_sys.executable)
+        if ver_ok:
+            self.vits_python_input.setText(_sys.executable)
+            self.vits_status.setText(f"✅ 使用当前 Python（torch {ver_info}）")
+            self.vits_status.setStyleSheet("font-size: 12px; color: #7dffb3; padding-left: 30px;")
+            log(f"✓ 当前 Python 已有 torch {ver_info}")
+            self._ensure_vits_deps(_sys.executable, log)
+            return
+
+        # 0️⃣.5️⃣ 项目自带的 _python（embedable，已存在则省去 venv 创建）
+        _embedded = _os.path.join(base, "_python", "python.exe")
+        if _os.path.isfile(_embedded):
+            ver_ok, ver_info = _check_torch(_embedded)
+            if ver_ok:
+                self.vits_python_input.setText(_embedded)
+                self.vits_status.setText(f"✅ 使用 _python（torch {ver_info}）")
+                self.vits_status.setStyleSheet("font-size: 12px; color: #7dffb3; padding-left: 30px;")
+                log(f"✓ 项目 _python 已有 torch {ver_info}")
+                self._ensure_vits_deps(_embedded, log)
+                return
+            # _python 存在但没有 torch → 直接在上面装（秒杀创建 venv）
+            log("📦 项目 _python 已存在，直接安装 PyTorch（省去 venv 创建）…")
+            self.setup_vits_btn.setEnabled(False)
+            self.setup_vits_btn.setText("⏳ 正在安装 PyTorch 到 _python…")
+            def _task_embedded():
+                _pip_install_deps(_embedded, "[_python] ")
+                QTimer.singleShot(0, lambda: self._on_vits_env_done(True, _embedded))
+            threading.Thread(target=_task_embedded, daemon=True).start()
+            return
+
+        # 1️⃣ vits_ft conda 环境
+        candidates = [
+            _os.path.join(_os.path.expanduser("~"), ".conda", "envs", "vits_ft", "python.exe"),
+            _os.path.join(_os.path.expanduser("~"), "miniconda3", "envs", "vits_ft", "python.exe"),
+            _os.path.join(_os.path.expanduser("~"), "anaconda3", "envs", "vits_ft", "python.exe"),
+        ]
+        found = None
+        for c in candidates:
+            if _os.path.isfile(c):
+                ok, _ = _check_torch(c)
+                if ok:
+                    found = c
+                    break
+        if found:
+            self.vits_python_input.setText(found)
+            self.vits_status.setText(f"✅ 找到 VITS 环境: {_os.path.basename(_os.path.dirname(_os.path.dirname(found)))}")
+            self.vits_status.setStyleSheet("font-size: 12px; color: #7dffb3; padding-left: 30px;")
+            log(f"✓ 使用 {found}")
+            self._ensure_vits_deps(found, log)
+            return
+
+        # 2️⃣ 已有 vits_env venv
+        venv_path = _os.path.join(base, "vits_env")
+        if _os.path.isdir(venv_path):
+            py_path = _os.path.join(venv_path, "Scripts", "python.exe")
+            if _os.path.isfile(py_path):
+                ok, _ = _check_torch(py_path)
+                if ok:
+                    self.vits_python_input.setText(py_path)
+                    self.vits_status.setText("✅ 使用已有 vits_env")
+                    self._ensure_vits_deps(py_path, log)
+                    return
+
+        # 3️⃣ 需要创建新环境（后台线程）
+        self.setup_vits_btn.setEnabled(False)
+        self.setup_vits_btn.setText("⏳ 正在配置 VITS 环境…")
+        log("开始创建 VITS Python 环境…")
+
+        def task():
+            try:
+                # 创建 venv
+                subprocess.run([_sys.executable, "-m", "venv", venv_path],
+                             capture_output=True, timeout=60)
+                py_path = _os.path.join(venv_path, "Scripts", "python.exe")
+                if not _os.path.isfile(py_path):
+                    raise Exception("venv 创建失败")
+
+                _pip_install_deps(py_path, "[venv] ")
+
+                # 复制 pyopenjtalk 词典
+                import shutil
+                src_dict = _os.path.join(_os.path.expanduser("~"), ".conda", "envs", "vits_ft",
+                                        "lib", "site-packages", "pyopenjtalk")
+                if _os.path.isdir(src_dict):
+                    dst_pkg = _os.path.join(venv_path, "Lib", "site-packages")
+                    if _os.path.isdir(dst_pkg):
+                        shutil.copytree(src_dict, _os.path.join(dst_pkg, "pyopenjtalk"),
+                                       dirs_exist_ok=True)
+                        log("已复制 pyopenjtalk 词典")
+
+                QTimer.singleShot(0, lambda: self._on_vits_env_done(True, py_path))
+            except Exception as e:
+                QTimer.singleShot(0, lambda: self._on_vits_env_done(False, str(e)))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _ensure_vits_deps(self, py_exe: str, log):
+        """确保 VITS 所需的基础依赖已安装（soundfile, numpy, scipy 等），非阻塞"""
+        import subprocess, threading
+        needed = []
+        _checks = {
+            "soundfile": "import soundfile; print('ok')",
+            "scipy": "import scipy; print('ok')",
+            "librosa": "import librosa; print('ok')",
+        }
+        env = os.environ.copy()
+        env.pop("PYTHONPATH", None)
+        for mod, test_code in _checks.items():
+            try:
+                r = subprocess.run([py_exe, "-c", test_code],
+                                   capture_output=True, text=True, timeout=10, env=env)
+                if r.returncode != 0:
+                    needed.append(mod)
+            except Exception:
+                needed.append(mod)
+
+        if not needed:
+            log("✓ VITS 基础依赖已就绪")
+            return
+
+        # 后台异步安装（不阻塞主线程、不阻塞向导流程）
+        log(f"  ⚠ 缺少 {len(needed)} 个 VITS 依赖: {', '.join(needed)}，后台安装中…")
+        def _task():
+            try:
+                r = subprocess.run(
+                    [py_exe, "-m", "pip", "install", "--timeout", "120",
+                     "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"] + needed,
+                    capture_output=True, text=True, timeout=300, env=env
+                )
+                if r.returncode == 0:
+                    QTimer.singleShot(0, lambda: log("✓ VITS 依赖安装完成"))
+                else:
+                    QTimer.singleShot(0, lambda: log(f"  ⚠ pip 安装失败: {r.stderr[-150:]}"))
+            except subprocess.TimeoutExpired:
+                QTimer.singleShot(0, lambda: log("  ⚠ pip 安装超时，VITS 可能无法正常工作"))
+        threading.Thread(target=_task, daemon=True).start()
+
+    def _on_vits_env_done(self, ok, result):
+        self.setup_vits_btn.setEnabled(True)
+        if ok:
+            self.vits_python_input.setText(result)
+            self.vits_status.setText("✅ VITS 环境已就绪！")
+            self.vits_status.setStyleSheet("font-size: 12px; color: #7dffb3; padding-left: 30px;")
+            self.setup_vits_btn.setText("✅ VITS 环境已配置")
+        else:
+            self.vits_status.setText(f"❌ 配置失败: {result[:50]}")
+            self.vits_status.setStyleSheet("font-size: 12px; color: #ff6b6b; padding-left: 30px;")
+            self.setup_vits_btn.setText("⚙️ 自动配置 VITS 环境（重试）")
 
 
 # ═══════════════════════════════════════
@@ -1049,7 +1459,7 @@ class SetupWizard(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("MeaPet 配置向导")
-        self.setFixedSize(620, 680)
+        self.setFixedSize(620, 720)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
 
@@ -1247,7 +1657,7 @@ class SetupWizard(QWidget):
             "llm": {"backend": self.llm_page.get_backend(), "temperature": 0.7},
             "vision": {"model": "minicpm-v"},
             "tts": {
-                "engine": "gpt_sovits",
+                "engine": self.tts_page.backend_combo.currentData(),
                 "enabled": self.tts_page.enable_cb.isChecked(),
                 "gpt_weights_dir": "./models/GPT_weights",
                 "sovits_weights_dir": "./models/SoVITS_weights",
@@ -1292,6 +1702,11 @@ class SetupWizard(QWidget):
         gsv_path = self.tts_page.gsv_dir_input.text().strip()
         if gsv_path:
             config["tts"]["python_exe"] = gsv_path
+
+        # VITS Python 路径
+        vits_py = self.tts_page.vits_python_input.text().strip()
+        if vits_py:
+            config["tts"]["vits_python"] = vits_py
 
         return config
 

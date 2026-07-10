@@ -3,8 +3,13 @@
 透明异形窗口 + 拖拽移动 + 表情切换 + 对话气泡
 """
 import sys
-import json
 import os
+# embeddable Python 的 ._pth 文件会抑制默认 sys.path，
+# 手动把项目目录加进去，否则 import utils 等本地模块会找不到
+_this_dir = os.path.dirname(os.path.abspath(__file__))
+if _this_dir not in sys.path:
+    sys.path.insert(0, _this_dir)
+import json
 import random
 import time
 import threading
@@ -793,6 +798,13 @@ class MeaPet(QWidget):
         menu.addAction(auto_action)
 
         menu.addSeparator()
+
+        # 再次配置
+        reconf_action = QAction("⚙ 再次配置", self)
+        reconf_action.triggered.connect(self._reopen_setup_wizard)
+        menu.addAction(reconf_action)
+
+        menu.addSeparator()
         menu.addAction("退出", self._quit)
         menu.exec_(self.mapToGlobal(pos))
 
@@ -859,6 +871,16 @@ class MeaPet(QWidget):
         if reply == QMessageBox.Yes:
             self.memory.reset_all()
             self._show_bubble("-什么都没发生喵。" if random.random() < 0.1 else "……你是谁喵？", 3000)
+
+    def _reopen_setup_wizard(self):
+        """重新打开配置向导"""
+        try:
+            from setup_wizard import SetupWizard
+            self._setup_wizard = SetupWizard()
+            self._setup_wizard.show()
+        except Exception as e:
+            safe_print(f"[pet] 启动配置向导失败: {e}")
+            self._show_bubble(f"启动配置向导失败喵: {e}", 3000)
 
     # ========================
     # 立绘渲染

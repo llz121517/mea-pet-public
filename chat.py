@@ -66,6 +66,14 @@ class ChatEngine:
         # 后台预加载：不阻塞启动，用线程检测
         if self.backend == "ollama":
             self._deferred_check()
+        elif self.backend == "deepseek":
+            # 同步检查 DeepSeek 可用性（不需要启动线程）
+            if self.api_key:
+                self.available = True
+                _safe_print(f"✓ DeepSeek API configured: {self.model}", flush=True)
+            else:
+                _safe_print(f"⚠ DeepSeek API: no key", flush=True)
+            self._backend_ready = True
 
     def _deferred_check(self):
         """线程内检测 Ollama（不阻塞 __init__）"""
@@ -315,6 +323,12 @@ class ChatEngine:
         return content
 
     def _chat_deepseek(self) -> str:
+        import time as _time
+        t0 = _time.time()
+
+        total_chars = sum(len(m.get("content", "")) for m in self.history)
+        _safe_print(f"[chat] DeepSeek 请求: model={self.model} messages={len(self.history)} 总字符≈{total_chars}", flush=True)
+
         resp = requests.post(
             f"{self.api_base.rstrip('/')}/chat/completions",
             headers={
@@ -325,14 +339,25 @@ class ChatEngine:
                 "model": self.model,
                 "messages": self.history,
                 "temperature": self.temperature,
-                "max_tokens": 100,
+                "max_tokens": 200,
             },
             timeout=30,
         )
+        t1 = _time.time()
+        _safe_print(f"[chat] DeepSeek 响应耗时: {t1-t0:.1f}s  status={resp.status_code}", flush=True)
+
         if resp.status_code != 200:
-            _safe_print(f"API error: {resp.status_code}", flush=True)
+            _safe_print(f"[chat] DeepSeek 错误: {resp.status_code} {resp.text[:200]}", flush=True)
             return self._fallback_reply()
-        return resp.json()["choices"][0]["message"]["content"]
+
+        data = resp.json()
+        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        t2 = _time.time()
+        _safe_print(f"[chat] DeepSeek 解析完成: {t2-t1:.1f}s  回复长度={len(content)}字", flush=True)
+        if not content or not content.strip():
+            _safe_print(f"[chat] DeepSeek 返回空内容! resp keys: {list(data.keys())}", flush=True)
+            return self._fallback_reply()
+        return content
 
     def _extract_memories(self, user_msg: str, mea_reply: str):
         """从对话中提取值得长期记住的信息（类似 OpenClaw memory promotion）

@@ -97,14 +97,17 @@ def _has_module(py_exe: str, module_name: str) -> bool:
 def _install_modules(py_exe: str, packages: list[str],
                      extra_index: str = None) -> bool:
     """pip install 包列表到指定 Python，返回是否全部成功"""
-    cmd = [py_exe, "-m", "pip", "install"]
+    cmd = [py_exe, "-m", "pip", "install", "--timeout", "120"]
     if extra_index:
+        # 有专用 index（如 PyTorch）时用它做主源，清华做备用
         cmd.extend(["--index-url", extra_index])
-    cmd.extend(["-i", GSV_PIP_INDEX, "--timeout", "120"])
+        cmd.extend(["--extra-index-url", GSV_PIP_INDEX])
+    else:
+        cmd.extend(["-i", GSV_PIP_INDEX])
     cmd.extend(packages)
     try:
         _safe_print(f"  pip install {len(packages)} 个包 …")
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
         if r.returncode != 0:
             _safe_print(f"  pip 失败: {r.stderr[-200:]}")
             return False
@@ -116,9 +119,10 @@ def _install_modules(py_exe: str, packages: list[str],
 
 
 def auto_install_gsv_deps(py_exe: str) -> bool:
-    """自动安装 GSV 依赖到指定 Python 环境"""
+    """检查并一键安装所有依赖到指定 Python"""
     _safe_print(f"  → 检查 GSV 依赖 (Python: {py_exe})")
 
+    # 快速检查缺了哪些
     missing = []
     for pkg in GSV_REQUIRED_PACKAGES:
         mod = _get_import_name(pkg)
@@ -129,31 +133,29 @@ def auto_install_gsv_deps(py_exe: str) -> bool:
         _safe_print(f"  ✓ 所有 GSV 依赖已安装")
         return True
 
-    _safe_print(f"  ⚠ 缺少 {len(missing)} 个依赖，自动安装 …")
-    ok = _install_modules(py_exe, missing)
-    if not ok:
-        _safe_print(f"  ❌ 基础依赖安装失败，尝试分步安装 …")
-        # 分步：先装 torch（特殊 index），再装其余
-        torch_pkgs = [p for p in missing if p in ("torch", "torchaudio")]
-        other_pkgs = [p for p in missing if p not in ("torch", "torchaudio")]
-        if torch_pkgs:
-            _install_modules(py_exe, torch_pkgs, extra_index=TORCH_INDEX_URL)
-        if other_pkgs:
-            _install_modules(py_exe, other_pkgs)
+    _safe_print(f"  ⚠ 缺少 {len(missing)} 个依赖，一次性安装 …")
+    # 拆成两批：torch 系用 PyTorch 官方源，其余用清华源
+    torch_pkgs = [p for p in missing if p in ("torch", "torchaudio")]
+    other_pkgs = [p for p in missing if p not in ("torch", "torchaudio")]
 
-    # 验证
-    still_missing = [p for p in GSV_REQUIRED_PACKAGES
-                     if not _has_module(py_exe, _get_import_name(p))]
-    if still_missing:
-        _safe_print(f"  ⚠ 仍有 {len(still_missing)} 个包未装: {still_missing}")
+    ok = True
+    if torch_pkgs:
+        ok = _install_modules(py_exe, torch_pkgs, extra_index=TORCH_INDEX_URL) and ok
+    if other_pkgs:
+        ok = _install_modules(py_exe, other_pkgs) and ok
+
+    if not ok:
+        _safe_print(f"  ❌ pip 安装失败，请检查网络或手动安装")
         return False
 
-    # 尝试装可选的
-    for pkg in GSV_OPTIONAL_PACKAGES:
-        mod = _get_import_name(pkg)
-        if not _has_module(py_exe, mod):
-            _install_modules(py_exe, [pkg])
+    # 最终验证
+    still = [p for p in GSV_REQUIRED_PACKAGES
+             if not _has_module(py_exe, _get_import_name(p))]
+    if still:
+        _safe_print(f"  ⚠ 仍有 {len(still)} 个包未装: {still}")
+        return False
 
+    _safe_print(f"  ✓ 所有依赖安装完成")
     return True
 
 
@@ -286,6 +288,11 @@ class MeaTTS:
         self.translate_api_key = tts_cfg.get("translate_api_key", "")
         self.translate_model = tts_cfg.get("translate_model", "deepseek-chat")
 
+        # ═══ VITS 后端配置 ═══
+        engine = tts_cfg.get("engine", "gpt_sovits")
+        self._vits_mode = engine == "vits" or tts_cfg.get("vits_mode", False)
+        self._vits_python = tts_cfg.get("vits_python", "") or self.python_exe
+
         # 自检依赖（首次自动安装）
         self._deps_ready = False
         self._deps_attempted = False
@@ -327,6 +334,10 @@ class MeaTTS:
         """speak 前确保依赖就绪（self._deps_ready 由 health_check 或显式调用设置）"""
         if self._deps_ready:
             return True
+        # VITS 模式不需要 GSV 依赖
+        if self._vits_mode:
+            self._deps_ready = True
+            return True
         if not self._deps_attempted:
             self._deps_attempted = True
             if auto_install_gsv_deps(self.python_exe):
@@ -354,8 +365,10 @@ class MeaTTS:
         except ImportError:
             _safe_print(f"  translate: 安装 translators …")
             import subprocess, sys
-            subprocess.run([sys.executable, "-m", "pip", "install", "translators", "-q"],
-                          capture_output=True, timeout=60)
+            subprocess.run([sys.executable, "-m", "pip", "install", "translators",
+                          "--index-url", "https://pypi.tuna.tsinghua.edu.cn/simple",
+                          "--trusted-host", "pypi.tuna.tsinghua.edu.cn", "-q"],
+                          capture_output=True, timeout=120)
             try:
                 import translators as ts
             except ImportError:
@@ -482,17 +495,12 @@ class MeaTTS:
         # 去掉结尾的"喵"后面多余的标点（保留喵字）
         clean = clean.strip()
 
-        if len(clean) < 2:
+        if len(clean) < 1:
             return None, ""
-        # 去掉纯标点/语气词的文本（如 "……" 无法合成）
-        # 使用 Unicode 类别检测，覆盖各种标点符号变体
-        _punct_cats = {'Pc', 'Pd', 'Pe', 'Pf', 'Pi', 'Po', 'Ps', 'Zs', 'Zl', 'Zp', 'Cc', 'Cf', 'Sm', 'Sk', 'So'}
-        if all(unicodedata.category(c) in _punct_cats for c in clean):
-            _safe_print(f"  TTS: 跳过纯标点文本")
-            return None, ""
-        # 额外过滤：纯省略号（各种 Unicode 变体）
-        if all(c in "…·.。，,、 " for c in clean):
-            _safe_print(f"  TTS: 跳过纯标点文本")
+        # 检查文本是否包含任何可发音内容（字母、数字、汉字等）
+        # 只有纯标点/符号/空白才跳过
+        if not any(unicodedata.category(c).startswith(('L', 'N')) for c in clean):
+            _safe_print(f"  TTS: 跳过无实际内容的文本: {clean[:40]}")
             return None, ""
 
         _safe_print(f"🔊 TTS: {clean[:60]}...  mood={mood}")
@@ -529,7 +537,48 @@ class MeaTTS:
 
         _safe_print(f"  → 合成: [日文] {tts_text[:60]}")
 
-        # 构建子进程参数
+        # 判断后端：VITS vs GPT-SoVITS
+        tts_backend = self.__class__.__name__  # MeaTTS = VITS, 否则走原逻辑
+        if hasattr(self, '_vits_mode') and self._vits_mode:
+            return self._speak_vits(tts_text, output_wav)
+        else:
+            return self._speak_gsv(tts_text, output_wav, mood, ref_wav, ref_text, ref_lang)
+
+    def _speak_vits(self, tts_text: str, output_wav: str) -> Optional[tuple[str, str]]:
+        """VITS 后端推理"""
+        _safe_print(f"  ▶ VITS 推理…")
+        t1 = time.time()
+        vits_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vits_infer.py")
+        vits_python = getattr(self, '_vits_python', self.python_exe)
+
+        try:
+            proc = subprocess.run(
+                [vits_python, vits_script, "--text", f"[JA]{tts_text}[JA]", "--output", output_wav,
+                 "--noise_scale", "0.667", "--noise_scale_w", "0.6", "--length_scale", "1.0"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=self.timeout,
+            )
+            elapsed = time.time() - t1
+            _safe_print(f"  ◀ VITS 返回 (rc={proc.returncode}, {elapsed:.1f}s)")
+
+            if proc.returncode != 0:
+                _safe_print(f"VITS failed: {proc.stderr[-200:]}")
+                return None, ""
+
+            if not os.path.exists(output_wav):
+                _safe_print(f"VITS: 输出文件不存在")
+                return None, ""
+
+            _safe_print(f"✓ VITS output: {os.path.basename(output_wav)} ({elapsed:.1f}s)")
+            return output_wav, "jp"
+        except Exception as e:
+            _safe_print(f"VITS exception: {e}")
+            return None, ""
+
+    def _speak_gsv(self, tts_text: str, output_wav: str, mood: str,
+                    ref_wav: str, ref_text: str, ref_lang: str) -> Optional[tuple[str, str]]:
+        """GPT-SoVITS 后端推理（原逻辑）"""
+        # 获取参考音频
         payload = {
             "ref_wav": ref_wav,
             "prompt_text": ref_text,

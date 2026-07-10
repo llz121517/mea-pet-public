@@ -736,3 +736,67 @@ FileNotFoundError: [WinError 2] ϵͳ�Ҳ���ָ�����ļ���: 
 [13:22:33] 🎤 MeaTTS v2 (subprocess) | python=python.exe | GPT=mea_pro-e50.ckpt | SoVITS=mea_pro_e24_s13704.pth | top_k=15 top_p=0.8 temp=0.6
 [13:22:45] 🎤 MeaTTS v2 (subprocess) | python=python.exe | GPT=mea_pro-e50.ckpt | SoVITS=mea_pro_e24_s13704.pth | top_k=15 top_p=0.8 temp=0.6
 [13:23:36] 🎤 MeaTTS v2 (subprocess) | python=python.exe | GPT=mea_pro-e50.ckpt | SoVITS=mea_pro_e24_s13704.pth | top_k=15 top_p=0.8 temp=0.6
+[16:50:04] 🎤 MeaTTS v2 (subprocess) | python=python.exe | GPT=mea_pro-e50.ckpt | SoVITS=mea_pro_e24_s13704.pth | top_k=15 top_p=0.8 temp=0.6
+[16:50:12] 🎤 MeaTTS v2 (subprocess) | python=python.exe | GPT=mea_pro-e50.ckpt | SoVITS=mea_pro_e24_s13704.pth | top_k=15 top_p=0.8 temp=0.6
+[16:52:25] 🎤 MeaTTS v2 (subprocess) | python=python.exe | GPT=mea_pro-e50.ckpt | SoVITS=mea_pro_e24_s13704.pth | top_k=15 top_p=0.8 temp=0.6
+[16:53:46] 🎤 MeaTTS v2 (subprocess) | python=python.exe | GPT=mea_pro-e50.ckpt | SoVITS=mea_pro_e24_s13704.pth | top_k=15 top_p=0.8 temp=0.6
+[16:55:09]   → 检查 GSV 依赖 (Python: D:/GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604\runtime\python.exe)
+[17:18:15] 🎤 MeaTTS v2 (subprocess) | python=python.exe | GPT=mea_pro-e50.ckpt | SoVITS=mea_pro_e24_s13704.pth | top_k=15 top_p=0.8 temp=0.6
+[17:18:18]   → 检查 GSV 依赖 (Python: D:/GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604\runtime\python.exe)
+[12:28:16]   → 检测到 GPT-SoVITS: D:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604\runtime\python.exe
+[12:28:16] 🎤 MeaTTS v2 (subprocess) | python=python.exe | GPT=mea_pro-e50.ckpt | SoVITS=mea_pro_e24_s13704.pth | top_k=15 top_p=0.8 temp=0.6
+[12:28:31]   → 检测到 GPT-SoVITS: D:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604\runtime\python.exe
+[12:28:31] 🎤 MeaTTS v2 (subprocess) | python=python.exe | GPT=mea_pro-e50.ckpt | SoVITS=mea_pro_e24_s13704.pth | top_k=15 top_p=0.8 temp=0.6
+[12:30:02]   → 检测到 GPT-SoVITS: D:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604\runtime\python.exe
+[12:30:02] 🎤 MeaTTS v2 (subprocess) | python=python.exe | GPT=mea_pro-e50.ckpt | SoVITS=mea_pro_e24_s13704.pth | top_k=15 top_p=0.8 temp=0.6
+[12:30:09]   → 检查 GSV 依赖 (Python: D:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604\runtime\python.exe)
+[12:30:14] TTS: 依赖未就绪，跳过合成
+[12:30:29] TTS: 依赖未就绪，跳过合成
+[12:30:31]   ✓ 所有 GSV 依赖已安装
+[12:30:31]   TTS: 跳过纯标点文本
+[12:31:07]   → 检测到 GPT-SoVITS: D:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604\runtime\python.exe
+[12:31:07] 🎤 MeaTTS v2 (subprocess) | python=python.exe | GPT=mea_pro-e50.ckpt | SoVITS=mea_pro_e24_s13704.pth | top_k=15 top_p=0.8 temp=0.6
+[12:33:31]   → 检测到 GPT-SoVITS: D:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604\runtime\python.exe
+[12:33:31] 🎤 MeaTTS v2 (subprocess) | python=python.exe | GPT=mea_pro-e50.ckpt | SoVITS=mea_pro_e24_s13704.pth | top_k=15 top_p=0.8 temp=0.6
+[12:33:35]   → 检测到 GPT-SoVITS: D:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604\runtime\python.exe
+[12:33:35] 🎤 MeaTTS v2 (subprocess) | python=python.exe | GPT=mea_pro-e50.ckpt | SoVITS=mea_pro_e24_s13704.pth | top_k=15 top_p=0.8 temp=0.6
+[12:33:44]   → 检查 GSV 依赖 (Python: D:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604\runtime\python.exe)
+[12:33:57]   ✓ 所有 GSV 依赖已安装
+[12:33:57] 🔊 TTS: 哼，无聊喵。...  mood=annoyed
+[12:33:57]   → 翻译中…
+[12:33:59]   translate (alibaba): ふん、つまんないにゃ。
+[12:33:59]   → 合成: [日文] ふん、つまんないにゃ。
+[12:33:59]   ▶ VITS 推理…
+[12:34:06]   ◀ VITS 返回 (rc=1, 6.7s)
+[12:34:06] VITS failed: lic-vits-fast\vits_core\text\__init__.py", line 22, in text_to_sequence
+    print(clean_text)
+UnicodeEncodeError: 'gbk' codec can't encode character '\u0278' in position 0: illegal multibyte sequence
+
+[12:36:00]   → 检测到 GPT-SoVITS: D:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604\runtime\python.exe
+[12:36:00] 🎤 MeaTTS v2 (subprocess) | python=python.exe | GPT=mea_pro-e50.ckpt | SoVITS=mea_pro_e24_s13704.pth | top_k=15 top_p=0.8 temp=0.6
+[12:36:08]   → 检查 GSV 依赖 (Python: D:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604\runtime\python.exe)
+[12:36:20]   ✓ 所有 GSV 依赖已安装
+[12:36:20] 🔊 TTS: ……什么味喵。...  mood=shy
+[12:36:20]   → 翻译中…
+[12:36:22]   translate (alibaba): ……何の匂いだにゃ。
+[12:36:22]   → 合成: [日文] ……何の匂いだにゃ。
+[12:36:22]   ▶ VITS 推理…
+[12:36:30]   ◀ VITS 返回 (rc=0, 8.0s)
+[12:36:30] ✓ VITS output: mea_180572.wav (8.0s)
+[12:40:43]   → 检测到 GPT-SoVITS: D:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604\runtime\python.exe
+[12:40:43] 🎤 MeaTTS v2 (subprocess) | python=python.exe | GPT=mea_pro-e50.ckpt | SoVITS=mea_pro_e24_s13704.pth | top_k=15 top_p=0.8 temp=0.6
+[12:54:06]   → 检测到 GPT-SoVITS: D:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604\runtime\python.exe
+[12:54:06] 🎤 MeaTTS v2 (subprocess) | python=python.exe | GPT=mea_pro-e50.ckpt | SoVITS=mea_pro_e24_s13704.pth | top_k=15 top_p=0.8 temp=0.6
+[12:54:19]   → 检查 GSV 依赖 (Python: D:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604\runtime\python.exe)
+[12:54:32]   ✓ 所有 GSV 依赖已安装
+[12:54:32] 🔊 TTS: 有事说事。不是来问我作业答案的吧，喵。...  mood=neutral
+[12:54:32]   → 翻译中…
+[12:54:34]   translate (alibaba): 用事があります宿題の答えを聞きに来たのではないでしょうか。
+[12:54:34]   → 合成: [日文] 用事があります宿題の答えを聞きに来たのではないでしょうか。
+[12:54:34]   ▶ VITS 推理…
+[12:54:48]   ◀ VITS 返回 (rc=0, 14.2s)
+[12:54:48] ✓ VITS output: mea_272032.wav (14.2s)
+[13:02:12]   → 检测到 GPT-SoVITS: D:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604\runtime\python.exe
+[13:02:12] 🎤 MeaTTS v2 (subprocess) | python=python.exe | GPT=mea_pro-e50.ckpt | SoVITS=mea_pro_e24_s13704.pth | top_k=15 top_p=0.8 temp=0.6
+[13:05:10]   → 检测到 GPT-SoVITS: D:\GPT-SoVITS-v2pro-20250604\GPT-SoVITS-v2pro-20250604\runtime\python.exe
+[13:05:10] 🎤 MeaTTS v2 (subprocess) | python=python.exe | GPT=mea_pro-e50.ckpt | SoVITS=mea_pro_e24_s13704.pth | top_k=15 top_p=0.8 temp=0.6

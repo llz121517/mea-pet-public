@@ -1,0 +1,21 @@
+# VITS Fast Fine-Tuning 推理依赖
+torch>=2.0.0
+torchaudio>=2.0.0
+soundfile
+numpy<2
+scipy
+librosa
+Cython
+pyopenjtalk-prebuilt
+unidecode
+jamo
+pypinyin
+jieba
+cn2an
+inflect
+eng_to_ipa
+ko_pron
+opencc
+indic_transliteration
+num_thai
+setuptools==69.5.1

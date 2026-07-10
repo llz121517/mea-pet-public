@@ -10,6 +10,7 @@
 import sys
 import os
 import time
+import io
 from typing import Optional, Tuple
 from PIL import ImageGrab
 from PyQt5.QtCore import QThread, pyqtSignal
