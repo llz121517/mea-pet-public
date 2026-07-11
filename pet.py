@@ -159,66 +159,53 @@ class DialogueBox(QWidget):
         self.hide()
 
     def show_text(self, text: str, duration_ms: int = 6000, name: str = "梅尔"):
-        """显示文本，支持淡入淡出，自适应文本长度"""
-        if self._hide_timer.isActive():
-            self._hide_timer.stop()
-        if self._anim_timer.isActive():
-            self._anim_timer.stop()
-
-        # 去掉表情标记
         import re
         clean_text = re.sub(r'【.*?】', '', text).strip()
-        self.text_label.setText(clean_text)
-
-        # 姓名标签
+    
+        # 1. 【关键】使用你定义的 wrap_text 手动处理中文换行
+        # 假设每行显示 16 个汉字（根据字体大小调整）
+        wrapped_text = wrap_text(clean_text, width=16) 
+        self.text_label.setText(wrapped_text)
+    
+        # 2. 关闭自动换行，改由我们手动控制
+        self.text_label.setWordWrap(False) 
+    
+        # ... 姓名标签设置保持不变 ...
         self.name_label.setText(f" {name} ")
         self.name_label.show()
 
-        # 手动计算文本所需宽高
+        # 3. 重新计算尺寸：基于换行后的行数
         from PyQt5.QtGui import QFontMetrics
         fm = QFontMetrics(self.text_label.font())
-        pad_h = 40   # 左右 padding
-        pad_v = 30   # 上下 padding
-        name_h = 32  # 姓名栏高度
+        pad_h = 40
+        pad_v = 30
+        name_h = 32
+    
+        # 获取最长行的像素宽度
+        lines = wrapped_text.split('\n')
+        max_line_w = max(fm.horizontalAdvance(line) for line in lines) if lines else 0
+        safe_margin = fm.averageCharWidth()  # 约等于一个汉字的宽度
+        content_w = max(220, min(max_line_w + pad_h + safe_margin, 600))
+    
+        # 高度 = 行数 × 行高 + padding
+        line_height = fm.lineSpacing()  # 推荐用 lineSpacing 而非 boundingRect.height
+        content_h = len(lines) * line_height + pad_v
+        content_h = max(50, min(content_h, 350))
 
-        # 最大宽度：屏幕宽度的 50%，不超过 600
-        from PyQt5.QtWidgets import QDesktopWidget
-        screen_w = QDesktopWidget().availableGeometry().width()
-        max_w = min(600, int(screen_w * 0.55))
-        min_w = 220
-
-        # 计算文本需要的宽度
-        lines = clean_text.split('\n')
-        text_rect = fm.boundingRect(0, 0, max_w - pad_h, 0,
-                                     Qt.TextWordWrap, clean_text)
-
-        # 宽度：取文本真实宽度和单行最宽之间的合理值
-        text_pixel_w = min(text_rect.width() + pad_h, max_w)
-
-        # 如果文本短，不撑太宽
-        single_line_w = fm.width(clean_text) + pad_h
-        content_w = max(min_w, min(text_pixel_w, max_w))
-
-        # 对于单行短文本不强制太宽
-        if '\n' not in clean_text and single_line_w < content_w:
-            content_w = max(min_w, single_line_w)
-
-        # 高度
-        content_h = text_rect.height() + pad_v
-        content_h = max(content_h, 50)
-        content_h = min(content_h, 350)
-
-        # 应用尺寸
-        self.text_label.setFixedSize(content_w, content_h)
-
+        # 4. 【关键】使用 setMinimumWidth / setFixedHeight 代替 setFixedSize
+        # 允许宽度有弹性，但高度固定以防止跳动
+        self.text_label.setMinimumWidth(content_w)
+        self.text_label.setFixedHeight(content_h)
+    
         total_w = content_w
-        total_h = name_h + content_h + 3  # +3 装饰线
-
+        total_h = name_h + content_h + 3
+    
         self.setFixedSize(total_w, total_h)
         self._container.setFixedSize(total_w, total_h)
         self.name_label.setFixedWidth(total_w)
         self._deco_line.setFixedWidth(total_w)
 
+        # ... 后续透明度重置和定时器逻辑保持不变 ...
         # 重置透明度到完全不透明
         self._opacity = 1.0
         self._fading = False
@@ -541,11 +528,12 @@ class MeaPet(QWidget):
         widget.head_patted.connect(self._on_head_patted)
         widget.tail_patted.connect(self._on_tail_patted)
         widget.show()
-        # Live2D 模型偏右偏上，左移下移让角色居中
+        # Live2D 模型偏右偏上，左移下移让角色居中傻福吧你移你冯我靠
+        # 我的发还有第二关还以为只在live2d_widget里
         w0 = widget.width()
         h0 = widget.height()
-        shift_x = int(w0 * 0.25)
-        shift_y = int(h0 * 0.08)
+        shift_x = int(w0 * 0.00)
+        shift_y = int(h0 * 0.00)
         widget.move(-shift_x, shift_y)
         widget.resize(w0 + shift_x, h0)
         self.resize(w0, h0)
