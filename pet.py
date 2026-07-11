@@ -694,11 +694,18 @@ class MeaPet(QWidget):
 
     def _init_watcher(self):
         """初始化屏幕观察器"""
+        llm_cfg = self.config.get("llm", {})
+        backend = llm_cfg.get("backend", "ollama")
         vision_model = self.config.get("vision", {}).get("model", "minicpm-v")
         self._watcher = ScreenWatcher(
-            ollama_host=self.config.get("llm", {}).get("host", "http://127.0.0.1:11434"),
+            ollama_host=llm_cfg.get("host", "http://127.0.0.1:11434"),
             vision_model=vision_model,
             chat_model=vision_model,  # 视觉模型兼做决策
+            # MiMo 后端参数
+            backend=backend,
+            api_base=llm_cfg.get("api_base", ""),
+            api_key=llm_cfg.get("api_key", ""),
+            mimo_model=llm_cfg.get("model", "XiaomiMiMo/MiMo-V2.5"),
         )
         self._watcher.result_ready.connect(self._on_watch_result)
         self._watcher.error.connect(self._on_watch_error)
@@ -953,20 +960,22 @@ class MeaPet(QWidget):
             expr_menu.addAction(action)
         menu.addMenu(expr_menu)
 
-        # 识图模型切换
-        vision_menu = QMenu("🔍 识图模型", self)
-        current_vision = self.config.get("vision", {}).get("model", "minicpm-v")
-        vision_options = [
-            ("minicpm-v (5.5G, 快)", "minicpm-v"),
-            ("qwen2.5vl:7b (6G)", "qwen2.5vl:7b"),
-        ]
-        for label, model_name in vision_options:
-            action = QAction(f"{'✅ ' if current_vision == model_name else '   '}{label}", self)
-            action.triggered.connect(
-                lambda checked, m=model_name: self._set_vision_model(m)
-            )
-            vision_menu.addAction(action)
-        menu.addMenu(vision_menu)
+        # 识图模型切换（仅 Ollama 本地模型可切换，MiMo 云端不适用）
+        backend = self.config.get("llm", {}).get("backend", "ollama")
+        if backend != "mimo":
+            vision_menu = QMenu("🔍 识图模型", self)
+            current_vision = self.config.get("vision", {}).get("model", "minicpm-v")
+            vision_options = [
+                ("minicpm-v (5.5G, 快)", "minicpm-v"),
+                ("qwen2.5vl:7b (6G)", "qwen2.5vl:7b"),
+            ]
+            for label, model_name in vision_options:
+                action = QAction(f"{'✅ ' if current_vision == model_name else '   '}{label}", self)
+                action.triggered.connect(
+                    lambda checked, m=model_name: self._set_vision_model(m)
+                )
+                vision_menu.addAction(action)
+            menu.addMenu(vision_menu)
 
         # 养成状态面板
         status_action = QAction("📊 养成状态", self)
@@ -1050,10 +1059,17 @@ class MeaPet(QWidget):
                 pass
             self._watcher.stop()
         chat_model = self.config.get("llm", {}).get("model", "qwen2.5:7b")
+        llm_cfg = self.config.get("llm", {})
+        backend = llm_cfg.get("backend", "ollama")
         self._watcher = ScreenWatcher(
-            ollama_host=self.config.get("llm", {}).get("host", "http://127.0.0.1:11434"),
+            ollama_host=llm_cfg.get("host", "http://127.0.0.1:11434"),
             vision_model=model_name,
             chat_model=chat_model,
+            # MiMo 后端参数
+            backend=backend,
+            api_base=llm_cfg.get("api_base", ""),
+            api_key=llm_cfg.get("api_key", ""),
+            mimo_model=llm_cfg.get("model", "XiaomiMiMo/MiMo-V2.5"),
         )
         self._watcher.result_ready.connect(self._on_watch_result)
         self._watcher.error.connect(self._on_watch_error)
@@ -1875,17 +1891,12 @@ class MeaPet(QWidget):
                 self.sprite_label.deleteLater()
                 self.sprite_label = None
             self._use_live2d = True
+
+            # ★ 在初始化 Live2D 之前先保存配置，确保即使崩溃也能记住
+            self.config.setdefault("live2d", {})["enabled"] = True
+            self._save_config()
+
             self._init_live2d()          # 这会创建新的 sprite_label
-            # 确保新控件可见
-            if self.sprite_label:
-                self.sprite_label.show()
-                self.sprite_label.raise_()
-            self.show()                  # 确保主窗口可见
-            if self._size_factor != 1.0:
-                self._size_factor_preview(self._size_factor)
-            self._apply_hit_region()
-            self._position_bubble()
-            self._show_bubble("🎭 Live2D 模式喵～", 2500)
         
 
         # 更新配置并保存
