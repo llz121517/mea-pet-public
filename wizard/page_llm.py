@@ -50,8 +50,7 @@ class LLMPage(QFrame):
         ollama_detail = QLabel(
             "    • 完全免费，不需要 API Key\n"
             "    • 需要先装 Ollama 并下载模型\n"
-            "    • 对话推荐模型：qwen2.5:7b\n"
-            "    • 识图推荐模型：minicpm-v（桌宠会偷看你屏幕）"
+            "    • 推荐模型：qwen3.5:4b（多模态，对话+识图一体）"
         )
         ollama_detail.setObjectName("HelperText")
         ollama_detail.setWordWrap(True)
@@ -64,7 +63,7 @@ class LLMPage(QFrame):
         deepseek_detail = QLabel(
             "    • 需要注册 DeepSeek 获取 API Key\n"
             "    • 按量付费，不需要本地显卡\n"
-            "    • 注：屏幕识图仍需要 Ollama（装 minicpm-v 即可）"
+            "    • 注：屏幕识图仍需要 Ollama（装 qwen3.5:4b 即可，多模态对话+识图一体）"
         )
         deepseek_detail.setObjectName("HelperText")
         deepseek_detail.setWordWrap(True)

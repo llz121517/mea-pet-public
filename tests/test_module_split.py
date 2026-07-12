@@ -105,7 +105,7 @@ class TestConfigStoreIO(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             path = os.path.join(td, "config.json")
             raw = {
-                "llm": {"backend": "ollama", "model": "qwen2.5:7b"},
+                "llm": {"backend": "ollama", "model": "qwen3.5:4b"},
                 "display": {"size_factor": 1.25},
                 "watcher": {"enabled": True, "allow_cloud": False},
             }

@@ -246,7 +246,7 @@ class PetWindowChromeMixin:
         ).lower()
         vision_menu = QMenu("识图设置", self)
         vision_menu.setStyleSheet(MENU_STYLE)
-        current_vision = vision_cfg.get("model", "minicpm-v")
+        current_vision = vision_cfg.get("model", "qwen3.5:4b")
         for label, bname in (
             ("后端: Ollama 本地", "ollama"),
             ("后端: MiMo 云端", "mimo"),
@@ -259,8 +259,7 @@ class PetWindowChromeMixin:
         vision_menu.addSeparator()
         if vision_backend != "mimo":
             for label, model_name in (
-                ("minicpm-v (5.5G, 快)", "minicpm-v"),
-                ("qwen2.5vl:7b (6G)", "qwen2.5vl:7b"),
+                ("qwen3.5:4b (多模态, 推荐)", "qwen3.5:4b"),
             ):
                 action = QAction(label, self)
                 action.setCheckable(True)

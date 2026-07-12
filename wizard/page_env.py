@@ -280,17 +280,13 @@ class EnvCheckPage(QFrame):
     def _check_ollama_models(self, existing_models: list):
         """检测 Ollama 模型是否就绪"""
         needed = [
-            ("qwen2.5:7b", "对话模型（约 4GB）", "对话用"),
-            ("minicpm-v", "视觉模型（约 5.5GB）", "屏幕识图用"),
+            ("qwen3.5:4b", "多模态模型（约 3GB）", "对话+识图用"),
         ]
-        has_qwen = any("qwen2.5" in m for m in existing_models)
-        has_vision = any("minicpm" in m or "llava" in m or "vl" in m for m in existing_models)
+        has_model = any("qwen3.5" in m for m in existing_models)
 
         for model_name, hint, purpose in needed:
-            is_chat = "qwen" in model_name
-            ok = has_qwen if is_chat else has_vision
             _, status, btn = self._add_row(f"  {model_name}", hint)
-            if ok:
+            if has_model:
                 set_status(status, "success", "就绪")
                 btn.hide()
             else:
