@@ -177,6 +177,8 @@ SECRET_PATTERNS = (
     ),
 )
 
+OBVIOUS_PLACEHOLDER_BYTES = frozenset({b"x", b"X", b"0"})
+
 LFS_HEADER = b"version https://git-lfs.github.com/spec/v1\n"
 MAX_SECRET_SCAN_BYTES = 5 * 1024 * 1024
 HASH_CHUNK_SIZE = 1024 * 1024
@@ -379,10 +381,20 @@ def _scan_for_secrets(root: Path, selection: ReleaseSelection) -> None:
         if b"\0" in data:
             continue
         for label, pattern in SECRET_PATTERNS:
-            if pattern.search(data):
+            for match in pattern.finditer(data):
+                if _is_obvious_secret_placeholder(match.group(0)):
+                    continue
                 raise SensitiveContentError(
                     f"检测到高置信度密钥模式（{label}）：{relative}"
                 )
+
+
+def _is_obvious_secret_placeholder(value: bytes) -> bool:
+    """只放行 sk- 后全为 x/X/0 的文档占位串。"""
+    if not value.startswith(b"sk-"):
+        return False
+    payload = value[3:]
+    return bool(payload) and payload[:1] in OBVIOUS_PLACEHOLDER_BYTES and len(set(payload)) == 1
 
 
 def _hash_file(path: Path) -> str:
