@@ -4,7 +4,7 @@
 （旧 parse_decision 仍保留供单测/兼容）
 
 支持切换视觉模型（config.json → vision.model）
-可用模型：minicpm-v (5.5G, 快) / qwen2.5vl:7b (6GB, 稍慢) MiMo V2.5（云端，超快）
+可用模型：qwen3.5:4b (多模态，推荐) / MiMo V2.5（云端，超快）
 
 设计参考：Sakura（Rvosy/sakura）的主动搭话 prompt 架构
 """
@@ -215,8 +215,8 @@ class ScreenWatcher(QThread):
     search_request = pyqtSignal(str)  # 请求 Web 搜索（关键词）
 
     def __init__(self, ollama_host: str = "http://127.0.0.1:11434",
-                 vision_model: str = "minicpm-v",
-                 chat_model: str = "qwen2.5:7b",
+                 vision_model: str = "qwen3.5:4b",
+                 chat_model: str = "qwen3.5:4b",
                  idle_minutes: float = 0,
                  # MiMo 后端参数
                  backend: str = "ollama",

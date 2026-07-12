@@ -392,7 +392,7 @@ class SetupWizard(QWidget):
     def collect_config(self):
         config = {
             "llm": {"backend": self.llm_page.get_backend(), "temperature": 0.7},
-            "vision": {"model": "minicpm-v", "backend": "", "enabled": False},
+            "vision": {"model": "qwen3.5:4b", "backend": "", "enabled": False},
             "tts": {
                 "engine": self.tts_page.backend_combo.currentData(),
                 "enabled": self.tts_page.enable_cb.isChecked(),
@@ -448,7 +448,7 @@ class SetupWizard(QWidget):
         b = self.llm_page.get_backend()
         if b == "ollama":
             config["llm"]["host"] = "http://127.0.0.1:11434"
-            config["llm"]["model"] = "qwen2.5:7b"
+            config["llm"]["model"] = "qwen3.5:4b"
             config["llm"]["api_key"] = ""
             config["llm"]["api_base"] = ""
             config["llm"]["bridge_url"] = ""

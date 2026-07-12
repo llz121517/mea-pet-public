@@ -53,11 +53,11 @@ class PetConfigBridgeMixin:
         v = self.config.setdefault("vision", {})
         v["backend"] = backend
         if backend == "mimo":
-            if not v.get("model") or v.get("model") in ("minicpm-v",):
+            if not v.get("model") or v.get("model") in ("qwen3.5:4b",):
                 v["model"] = "mimo"
         else:
             if not v.get("model") or v.get("model") in ("mimo",):
-                v["model"] = "minicpm-v"
+                v["model"] = "qwen3.5:4b"
         self._save_config()
         self._disconnect_watcher_signals()
         self._init_watcher()

@@ -94,6 +94,7 @@ MIMO_MODEL_ALIASES = {
     "mimo-v2.5-pro": "mimo-v2.5-pro",
     "mimo": "mimo-v2.5",
     "minicpm-v": "mimo-v2.5",  # 误填时给 vision 一条生路
+    "qwen3.5:4b": "mimo-v2.5",  # 同上
 }
 
 def normalize_mimo_model_id(model: str, *, for_vision: bool = False) -> str:

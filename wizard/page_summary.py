@@ -111,7 +111,7 @@ class SummaryPage(QFrame):
                 else:
                     lines.append("需要处理  ·  云端识图未允许（MiMo 识图不会工作）")
             else:
-                lines.append(f"视觉模型  ·  {v.get('model') or 'minicpm-v'}")
+                lines.append(f"视觉模型  ·  {v.get('model') or 'qwen3.5:4b'}")
             iv = w.get("interval") or {}
             if iv:
                 lines.append(

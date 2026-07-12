@@ -203,16 +203,16 @@ class MeaPet(
 
         backend = resolve_vision_backend(vision_cfg, llm_cfg)
         vision_model = vision_cfg.get("model") or (
-            "mimo" if backend == "mimo" else "minicpm-v"
+            "mimo" if backend == "mimo" else "qwen3.5:4b"
         )
         if backend == "mimo":
             mimo_model = (
                 vision_cfg.get("model")
                 if vision_cfg.get("model")
-                and vision_cfg.get("model") not in ("mimo", "minicpm-v")
+                and vision_cfg.get("model") not in ("mimo", "qwen3.5:4b")
                 else llm_cfg.get("model", "mimo-v2.5")
             )
-            if not mimo_model or mimo_model in ("mimo", "minicpm-v"):
+            if not mimo_model or mimo_model in ("mimo", "qwen3.5:4b"):
                 mimo_model = llm_cfg.get("model", "mimo-v2.5")
         else:
             mimo_model = llm_cfg.get("model", "mimo-v2.5")
@@ -224,7 +224,7 @@ class MeaPet(
                 from meapet.config.store import normalize_mimo_model_id
                 mimo_model = normalize_mimo_model_id(mimo_model, for_vision=True)
             except Exception:
-                if not mimo_model or mimo_model in ("mimo", "minicpm-v") or str(mimo_model).startswith("XiaomiMiMo/"):
+                if not mimo_model or mimo_model in ("mimo", "qwen3.5:4b") or str(mimo_model).startswith("XiaomiMiMo/"):
                     mimo_model = "mimo-v2.5"
         ollama_host = resolve_vision_host(vision_cfg, llm_cfg)
 

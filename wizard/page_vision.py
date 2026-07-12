@@ -82,8 +82,7 @@ class VisionPage(QFrame):
         self.model_combo = QComboBox()
         self.model_combo.setObjectName("VisionModel")
         self.model_combo.setAccessibleName("本地视觉模型")
-        self.model_combo.addItem("minicpm-v（推荐，较快）", "minicpm-v")
-        self.model_combo.addItem("qwen2.5vl:7b", "qwen2.5vl:7b")
+        self.model_combo.addItem("qwen3.5:4b（多模态，推荐）", "qwen3.5:4b")
         layout.addWidget(self.model_combo)
 
         self.host_label = QLabel("Ollama 地址（可空=用对话配置）：")
@@ -179,7 +178,7 @@ class VisionPage(QFrame):
             set_status(
                 self.hint,
                 "muted",
-                "本地 Ollama 需已拉取视觉模型，例如：ollama pull minicpm-v",
+                "本地 Ollama 需已拉取视觉模型，例如：ollama pull qwen3.5:4b",
             )
         else:
             set_status(
@@ -203,7 +202,7 @@ class VisionPage(QFrame):
             idx = 2
         self.backend_combo.setCurrentIndex(idx)
 
-        model = vision_cfg.get("model") or "minicpm-v"
+        model = vision_cfg.get("model") or "qwen3.5:4b"
         for i in range(self.model_combo.count()):
             if self.model_combo.itemData(i) == model:
                 self.model_combo.setCurrentIndex(i)
@@ -257,14 +256,14 @@ class VisionPage(QFrame):
         vision = {
             "enabled": self.enable_cb.isChecked(),
             "backend": vision_backend_field,
-            "model": self.model_combo.currentData() or "minicpm-v",
+            "model": self.model_combo.currentData() or "qwen3.5:4b",
             "host": self.host_input.text().strip(),
             "api_key": self.api_key_input.text().strip(),
             "api_base": self.api_base_input.text().strip(),
         }
         if backend == "mimo":
             # 云端时 model 用占位 mimo，实际请求用 llm/vision 的多模态模型名
-            if not vision["model"] or vision["model"] in ("minicpm-v", "qwen2.5vl:7b"):
+            if not vision["model"] or vision["model"] in ("qwen3.5:4b",):
                 vision["model"] = "mimo"
             same_provider = (llm_backend or "").lower() == "mimo"
             if not vision["api_key"] and same_provider:
@@ -280,7 +279,7 @@ class VisionPage(QFrame):
                 )
         elif backend == "ollama":
             if vision["model"] in ("mimo", ""):
-                vision["model"] = "minicpm-v"
+                vision["model"] = "qwen3.5:4b"
 
         watcher = {
             "enabled": self.enable_cb.isChecked(),

@@ -68,7 +68,7 @@ class ChatEngine:
         self,
         backend: str = "ollama",
         host: str = "http://127.0.0.1:11434",
-        model: str = "minicpm-v",
+        model: str = "qwen3.5:4b",
         api_key: str = "",
         api_base: str = "",
         temperature: float = 0.7,
@@ -900,7 +900,7 @@ def create_engine_from_config(config: dict, memory: "MeaMemory" = None) -> ChatE
     backend = llm_cfg.get("backend", "ollama")
     api_key = resolve_llm_api_key(llm_cfg)
 
-    model = llm_cfg.get("model", "minicpm-v")
+    model = llm_cfg.get("model", "qwen3.5:4b")
     api_base = llm_cfg.get("api_base", "https://api.deepseek.com")
     if (backend or "").lower() == "mimo":
         try:
