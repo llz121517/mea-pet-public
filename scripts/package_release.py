@@ -180,6 +180,7 @@ SECRET_PATTERNS = (
 OBVIOUS_PLACEHOLDER_BYTES = frozenset({b"x", b"X", b"0"})
 
 LFS_HEADER = b"version https://git-lfs.github.com/spec/v1\n"
+MAX_LFS_POINTER_BYTES = 4 * 1024
 MAX_SECRET_SCAN_BYTES = 5 * 1024 * 1024
 HASH_CHUNK_SIZE = 1024 * 1024
 ZIP_MIN_EPOCH = 315_532_800
@@ -278,6 +279,8 @@ def _source_path(root: Path, relative: str) -> Path:
 def is_git_lfs_pointer(path: Path) -> bool:
     """只读取指针头判断 LFS 文件，不调用 git-lfs，也不下载对象。"""
     try:
+        if path.stat().st_size > MAX_LFS_POINTER_BYTES:
+            return False
         with path.open("rb") as stream:
             head = stream.read(512)
     except OSError as exc:
