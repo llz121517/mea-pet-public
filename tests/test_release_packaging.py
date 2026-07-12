@@ -18,13 +18,14 @@ import zipfile
 
 import pytest
 
-from scripts import package_release
-from scripts.package_release import (
-    PackagingError,
-    SensitiveContentError,
-    build_release_archive,
-    collect_release_files,
+package_release = pytest.importorskip(
+    "scripts.package_release",
+    reason="本地打包脚本未提供（默认不入库）",
 )
+PackagingError = package_release.PackagingError
+SensitiveContentError = package_release.SensitiveContentError
+build_release_archive = package_release.build_release_archive
+collect_release_files = package_release.collect_release_files
 
 
 LFS_POINTER = (
@@ -67,6 +68,7 @@ def _make_project(root: Path) -> list[str]:
         "wizard/__init__.py": "",
         "wizard/app.py": "class Wizard: pass\n",
         "scripts/__init__.py": "",
+        # 打包器默认不入库；若误进候选清单也不得进入分享包。
         "scripts/package_release.py": "# packager\n",
         "sprites/mea01A_001.png": b"\x89PNG\r\nfixture",
         "live2d/model/mea_live2d/mea.model3.json": "{}\n",
@@ -113,6 +115,8 @@ def test_standard_selection_contains_runtime_but_not_private_or_optional_files(
     assert "live2d/model/mea_live2d/mea.model3.json" in included
     assert "GPT-Sovits/normal/jp_normal.wav" in included
     assert "vits_models/finetune_speaker.json" in included
+    # 打包器本身默认不随分享包分发
+    assert "scripts/package_release.py" not in included
 
     assert "config.json" not in included
     assert ".env" not in included
