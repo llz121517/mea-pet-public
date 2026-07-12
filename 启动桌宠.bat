@@ -1,147 +1,263 @@
 @echo off
-chcp 65001 >nul
+setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
-set PYTHONIOENCODING=utf-8
+set "PYTHONIOENCODING=utf-8"
+set "PYTHONUNBUFFERED=1"
 title MeaPet
 
-set PY_CMD=
+set "ERR=0"
+set "MEAPET_PY=3.12"
+set "VENV_DIR=%~dp0.venv"
+set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
+set "UV_CMD="
+set "PY_CMD="
+set "SYS_PY="
 
-:: ======== 1. 检测已有 Python ========
+if exist "%~dp0.python-version" (
+    for /f "usebackq tokens=* delims=" %%i in ("%~dp0.python-version") do (
+        set "MEAPET_PY=%%i"
+        goto py_ver_done
+    )
+)
+:py_ver_done
+for /f "delims=" %%i in ("!MEAPET_PY!") do set "MEAPET_PY=%%i"
 
-:: 0. Hermes venv（自带 PyTorch，免装依赖）
-if exist "%LOCALAPPDATA%\hermes\hermes-agent\venv\Scripts\python.exe" (
-    set PY_CMD="%LOCALAPPDATA%\hermes\hermes-agent\venv\Scripts\python.exe"
+if not defined UV_INDEX_URL set "UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple"
+if not defined UV_PYTHON_INSTALL_MIRROR set "UV_PYTHON_INSTALL_MIRROR=https://ghproxy.com/https://github.com/astral-sh/python-build-standalone/releases/download"
+
+if not exist "pet.py" goto missing_pet
+if not exist "linux_requirements.txt" goto missing_req
+goto have_files
+
+:missing_pet
+echo [MeaPet] missing pet.py - run from project root
+set "ERR=1"
+goto end
+
+:missing_req
+echo [MeaPet] missing linux_requirements.txt
+set "ERR=1"
+goto end
+
+:have_files
+if exist "%VENV_PY%" (
+    set "PY_CMD=%VENV_PY%"
+    echo [MeaPet] using .venv
     goto dep_check
 )
-if exist "%USERPROFILE%\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe" (
-    set PY_CMD="%USERPROFILE%\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe"
-    goto dep_check
+
+echo [MeaPet] no .venv, creating...
+call :ensure_uv
+if defined UV_CMD (
+    echo [MeaPet] uv: !UV_CMD!
+    echo [MeaPet] uv venv Python !MEAPET_PY!
+    "!UV_CMD!" venv --python "!MEAPET_PY!" "%VENV_DIR%"
+    if errorlevel 1 (
+        echo [MeaPet] uv venv failed, retry Python 3.12 official mirror
+        set "UV_PYTHON_INSTALL_MIRROR="
+        "!UV_CMD!" venv --python 3.12 "%VENV_DIR%"
+    )
+    if errorlevel 1 (
+        echo [MeaPet] uv failed, try system Python
+        call :create_venv_with_system_python
+    )
+) else (
+    echo [MeaPet] no uv, try system Python
+    call :create_venv_with_system_python
 )
 
-:: 1a. 系统 PATH
-python --version >nul 2>&1
-if %errorlevel% equ 0 set PY_CMD=python&goto dep_check
-py --version >nul 2>&1
-if %errorlevel% equ 0 set PY_CMD=py&goto dep_check
+if not exist "%VENV_PY%" goto venv_fail
+set "PY_CMD=%VENV_PY%"
+echo [MeaPet] .venv ready
+call :install_deps
+if errorlevel 1 goto deps_fail
+goto ready
 
-:: 1b. 常见安装路径
-for %%v in (313 312 311 310) do (
-    if exist "%LOCALAPPDATA%\Programs\Python\Python%%v\python.exe" set PY_CMD="%LOCALAPPDATA%\Programs\Python\Python%%v\python.exe"&goto dep_check
-    if exist "%ProgramFiles%\Python\Python%%v\python.exe" set PY_CMD="%ProgramFiles%\Python\Python%%v\python.exe"&goto dep_check
-)
+:venv_fail
+echo [MeaPet] failed to create .venv
+echo.
+echo Fix options:
+echo   1. install uv: https://docs.astral.sh/uv/getting-started/installation/
+echo      powershell -ExecutionPolicy Bypass -c "irm https://astral.sh/uv/install.ps1 | iex"
+echo   2. set MEAPET_ALLOW_DOWNLOAD=1 then re-run
+echo   3. install Python 3.10-3.12 with Add to PATH
+echo   4. manual:
+echo      uv python install 3.12
+echo      uv venv --python 3.12 .venv
+echo      uv pip install -r linux_requirements.txt --python .venv\Scripts\python.exe
+set "ERR=1"
+goto end
 
-:: 1c. 便携版（有 pip 才直接用）
-if exist "%~dp0_python\python.exe" set PY_CMD="%~dp0_python\python.exe"
-if defined PY_CMD %PY_CMD% -m pip --version >nul 2>&1
-if defined PY_CMD if not errorlevel 1 goto dep_check
-if defined PY_CMD echo [MeaPet] 发现 _python\ 但 pip 未就绪，重新安装 pip ...
+:deps_fail
+echo [MeaPet] dependency install failed
+echo manual:
+echo   uv pip install -r linux_requirements.txt --python .venv\Scripts\python.exe
+echo   .venv\Scripts\python.exe -m pip install -r linux_requirements.txt --prefer-binary
+set "ERR=1"
+goto end
 
-:: ======== 2. 需要下载/修复 python + pip ========
-
-:: 没 PY_CMD 则下载 embeddable
-if defined PY_CMD goto fix_pip
-
-echo [MeaPet] 未检测到 Python，正在下载 Python 3.11（约 11MB）...
-
-set PS_SCRIPT=%TEMP%\meapet_dl_python.ps1
-> "%PS_SCRIPT%" echo $url = 'https://mirrors.tuna.tsinghua.edu.cn/python/3.11.9/python-3.11.9-embed-amd64.zip'
->> "%PS_SCRIPT%" echo $fbk = 'https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip'
->> "%PS_SCRIPT%" echo $dir = Join-Path $pwd '_python'
->> "%PS_SCRIPT%" echo $zip = Join-Path $pwd '_python.zip'
->> "%PS_SCRIPT%" echo write-host '  downloading ...'
->> "%PS_SCRIPT%" echo [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
->> "%PS_SCRIPT%" echo try { Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing }
->> "%PS_SCRIPT%" echo catch { write-host '  mirror fallback ...'; Invoke-WebRequest -Uri $fbk -OutFile $zip -UseBasicParsing }
->> "%PS_SCRIPT%" echo if (-not (Test-Path $zip^)^) { write-host '  download FAILED'; exit 1 }
->> "%PS_SCRIPT%" echo write-host '  extracting ...'
->> "%PS_SCRIPT%" echo Expand-Archive -Path $zip -DestinationPath $dir -Force
->> "%PS_SCRIPT%" echo Remove-Item $zip
-powershell -ExecutionPolicy Bypass -File "%PS_SCRIPT%"
-if %errorlevel% neq 0 (
-    echo [MeaPet] Python 下载失败
-    echo 请手动安装 Python 3.11：https://www.python.org/downloads/
-    pause
-    exit /b 1
-)
-del "%PS_SCRIPT%"
-
-if not exist "%~dp0_python\python.exe" (
-    echo [MeaPet] Python 解压失败
-    pause
-    exit /b 1
-)
-set PY_CMD="%~dp0_python\python.exe"
-
-:: ======== 3. 安装 pip ========
-:fix_pip
-echo [MeaPet] 正在安装 pip ...
-
-set PS_SCRIPT=%TEMP%\meapet_dl_python.ps1
-> "%PS_SCRIPT%" echo $py = '%PY_CMD:"=%'
->> "%PS_SCRIPT%" echo $dir = Join-Path $pwd '_python'
->> "%PS_SCRIPT%" echo write-host '  enabling site-packages ...'
->> "%PS_SCRIPT%" echo $pth = Get-ChildItem $dir -Filter '*._pth' ^| Select-Object -First 1 -ExpandProperty FullName
->> "%PS_SCRIPT%" echo if ($pth^) { (Get-Content $pth -Raw^) -replace '#import site', 'import site' ^| Set-Content $pth }
->> "%PS_SCRIPT%" echo write-host '  downloading get-pip.py ...'
->> "%PS_SCRIPT%" echo $gp = Join-Path $dir 'get-pip.py'
->> "%PS_SCRIPT%" echo $ok = $false
->> "%PS_SCRIPT%" echo $urls = @('https://bootstrap.pypa.io/get-pip.py','https://raw.githubusercontent.com/pypa/get-pip/main/public/get-pip.py')
->> "%PS_SCRIPT%" echo foreach ($u in $urls^) { try { Invoke-WebRequest -Uri $u -OutFile $gp -UseBasicParsing; $ok = $true; break } catch { write-host ('    ' + $u + ' failed'^) } }
->> "%PS_SCRIPT%" echo if (-not $ok^) { write-host '  get-pip.py download FAILED'; exit 1 }
->> "%PS_SCRIPT%" echo write-host '  running get-pip.py ...'
->> "%PS_SCRIPT%" echo ^& $py $gp
->> "%PS_SCRIPT%" echo if ($LASTEXITCODE -ne 0^) { write-host '  pip install FAILED'; exit 1 }
->> "%PS_SCRIPT%" echo Remove-Item $gp
->> "%PS_SCRIPT%" echo write-host '  verifying pip ...'
->> "%PS_SCRIPT%" echo ^& $py -m pip --version 2^>$null
->> "%PS_SCRIPT%" echo if ($LASTEXITCODE -ne 0^) { write-host '  pip verify FAILED'; exit 1 }
->> "%PS_SCRIPT%" echo write-host '  pip ready!'
-powershell -ExecutionPolicy Bypass -File "%PS_SCRIPT%"
-set PIP_EXIT=%errorlevel%
-del "%PS_SCRIPT%"
-
-:: 备用 ensurepip
-if %PIP_EXIT% neq 0 (
-    echo [MeaPet] get-pip.py 失败，尝试 ensurepip ...
-    %PY_CMD% -m ensurepip --upgrade >nul 2>&1
-    %PY_CMD% -m pip --version >nul 2>&1
-    if not errorlevel 1 set PIP_EXIT=0
-)
-
-if %PIP_EXIT% neq 0 (
-    echo [MeaPet] pip 安装失败
-    echo 请手动运行：%PY_CMD% -m ensurepip --upgrade
-    pause
-    exit /b 1
-)
-
-echo [MeaPet] Python 3.11 + pip 已就绪！
-
-:: ======== 4. 安装基础依赖 ========
 :dep_check
-%PY_CMD% --version
+echo [MeaPet] checking deps...
+"!PY_CMD!" --version
+"!PY_CMD!" -c "import PyQt5,PIL,requests,numpy,httpx,OpenGL" >nul 2>&1
+if not errorlevel 1 goto ready
+echo [MeaPet] installing missing deps...
+call :ensure_uv
+call :install_deps
+if errorlevel 1 goto deps_fail
 
-echo [MeaPet] 正在安装基础依赖（PyQt5, pillow, PyOpenGL, numpy）...
-%PY_CMD% -m pip install -r linux_requirements.txt --index-url https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn
-if %errorlevel% neq 0 (
-    echo [MeaPet] 基础依赖安装失败喵
-    pause
-    exit /b 1
-)
-
-echo [MeaPet] 正在安装 Live2D 支持（live2d-py）...
-%PY_CMD% -m pip install live2d-py --index-url https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn
-if %errorlevel% neq 0 (
-    echo [MeaPet] Live2D 支持安装失败，桌宠将以 PNG 模式运行喵
-)
-
-:: ======== 5. 启动 ========
-if not exist "config.json" (
-    %PY_CMD% setup_wizard.py
+:ready
+if exist "config.json" goto launch_pet
+if not exist "setup_wizard.py" goto missing_wizard
+echo [MeaPet] first run: setup wizard
+"!PY_CMD!" setup_wizard.py
+set "ERR=!ERRORLEVEL!"
+if not "!ERR!"=="0" (
+    echo [MeaPet] wizard exit code=!ERR!
     goto end
 )
+if not exist "config.json" (
+    echo [MeaPet] no config.json after wizard, stop
+    set "ERR=1"
+    goto end
+)
+echo [MeaPet] config ready, starting pet...
+goto launch_pet
 
-%PY_CMD% pet.py
+:missing_wizard
+echo [MeaPet] missing setup_wizard.py and config.json
+echo copy config.example.json to config.json then retry
+set "ERR=1"
+goto end
+
+:launch_pet
+echo [MeaPet] start pet.py
+echo [MeaPet] tray icon to quit; logs: meapet_boot.log
+echo [MeaPet] debug: .venv\Scripts\python.exe -u pet.py
+echo [MeaPet] --------------------------------------------
+"!PY_CMD!" -u pet.py
+set "ERR=!ERRORLEVEL!"
+echo.
+echo [MeaPet] exit code=!ERR!
+
+if exist meapet_boot.log (
+    echo [MeaPet] ---- meapet_boot.log tail ----
+    powershell -NoProfile -Command "Get-Content -Path 'meapet_boot.log' -Tail 30 -ErrorAction SilentlyContinue"
+)
+if exist meapet_crash.log echo [MeaPet] meapet_crash.log exists
+if exist meapet_fault.log (
+    for %%A in (meapet_fault.log) do if %%~zA GTR 0 echo [MeaPet] meapet_fault.log non-empty
+)
+
+if not "!ERR!"=="0" (
+    echo [MeaPet] abnormal exit, see meapet_crash.log
+) else (
+    echo [MeaPet] done
+)
 
 :end
 pause
+exit /b !ERR!
+
+:create_venv_with_system_python
+set "SYS_PY="
+where py >nul 2>&1
+if not errorlevel 1 (
+    for %%V in (3.12 3.11 3.10 3) do (
+        if not defined SYS_PY (
+            py -%%V -c "import sys; raise SystemExit(0 if sys.version_info[:2]>=(3,10) else 1)" >nul 2>&1
+            if not errorlevel 1 (
+                for /f "delims=" %%i in ('py -%%V -c "import sys; print(sys.executable)" 2^>nul') do set "SYS_PY=%%i"
+            )
+        )
+    )
+)
+if not defined SYS_PY (
+    where python >nul 2>&1
+    if not errorlevel 1 (
+        python -c "import sys; raise SystemExit(0 if sys.version_info[:2]>=(3,10) else 1)" >nul 2>&1
+        if not errorlevel 1 (
+            for /f "delims=" %%i in ('python -c "import sys; print(sys.executable)" 2^>nul') do set "SYS_PY=%%i"
+        )
+    )
+)
+if not defined SYS_PY (
+    echo [MeaPet] no system Python 3.10+
+    exit /b 1
+)
+echo [MeaPet] system Python: !SYS_PY!
+"!SYS_PY!" -m venv "%VENV_DIR%"
+if errorlevel 1 (
+    echo [MeaPet] python -m venv failed
+    exit /b 1
+)
+exit /b 0
+
+:install_deps
+if not defined UV_CMD call :ensure_uv
+if defined UV_CMD (
+    echo [MeaPet] uv pip install...
+    "!UV_CMD!" pip install -r linux_requirements.txt --python "!PY_CMD!" --index-url "%UV_INDEX_URL%"
+    if errorlevel 1 (
+        echo [MeaPet] mirror failed, try pypi.org
+        "!UV_CMD!" pip install -r linux_requirements.txt --python "!PY_CMD!" --index-url https://pypi.org/simple
+    )
+    if errorlevel 1 exit /b 1
+    echo [MeaPet] optional live2d-py...
+    "!UV_CMD!" pip install live2d-py --python "!PY_CMD!" --index-url "%UV_INDEX_URL%" >nul 2>&1
+    if errorlevel 1 "!UV_CMD!" pip install live2d-py --python "!PY_CMD!" >nul 2>&1
+    if errorlevel 1 echo [MeaPet] live2d-py skipped, PNG mode
+    exit /b 0
+)
+echo [MeaPet] pip install...
+"!PY_CMD!" -m pip install --upgrade pip setuptools wheel >nul 2>&1
+"!PY_CMD!" -m pip install -r linux_requirements.txt --prefer-binary -i "%UV_INDEX_URL%" --trusted-host pypi.tuna.tsinghua.edu.cn
+if errorlevel 1 "!PY_CMD!" -m pip install -r linux_requirements.txt --prefer-binary
+if errorlevel 1 exit /b 1
+"!PY_CMD!" -m pip install live2d-py --prefer-binary >nul 2>&1
+if errorlevel 1 echo [MeaPet] live2d-py skipped, PNG mode
+exit /b 0
+
+:ensure_uv
+set "UV_CMD="
+where uv >nul 2>&1
+if not errorlevel 1 (
+    for /f "delims=" %%i in ('where uv') do (
+        if not defined UV_CMD set "UV_CMD=%%i"
+    )
+)
+if not defined UV_CMD if exist "%USERPROFILE%\.local\bin\uv.exe" set "UV_CMD=%USERPROFILE%\.local\bin\uv.exe"
+if not defined UV_CMD if exist "%USERPROFILE%\.cargo\bin\uv.exe" set "UV_CMD=%USERPROFILE%\.cargo\bin\uv.exe"
+if not defined UV_CMD if exist "%LOCALAPPDATA%\Programs\uv\uv.exe" set "UV_CMD=%LOCALAPPDATA%\Programs\uv\uv.exe"
+if defined UV_CMD exit /b 0
+
+echo [MeaPet] uv not found
+if /I not "%MEAPET_ALLOW_DOWNLOAD%"=="1" (
+    echo [MeaPet] set MEAPET_ALLOW_DOWNLOAD=1 to auto-install uv
+    echo [MeaPet] will try system Python next
+    exit /b 1
+)
+
+echo [MeaPet] installing uv...
+powershell -ExecutionPolicy Bypass -NoProfile -Command "try { irm https://astral.sh/uv/install.ps1 | iex } catch { exit 1 }"
+if errorlevel 1 (
+    echo [MeaPet] uv install failed, try pip
+    where python >nul 2>&1
+    if not errorlevel 1 (
+        python -m pip install -U uv -i https://pypi.tuna.tsinghua.edu.cn/simple
+    )
+)
+
+where uv >nul 2>&1
+if not errorlevel 1 (
+    for /f "delims=" %%i in ('where uv') do (
+        if not defined UV_CMD set "UV_CMD=%%i"
+    )
+)
+if not defined UV_CMD if exist "%USERPROFILE%\.local\bin\uv.exe" set "UV_CMD=%USERPROFILE%\.local\bin\uv.exe"
+if not defined UV_CMD if exist "%USERPROFILE%\.cargo\bin\uv.exe" set "UV_CMD=%USERPROFILE%\.cargo\bin\uv.exe"
+if defined UV_CMD (
+    echo [MeaPet] uv ready: !UV_CMD!
+    exit /b 0
+)
+exit /b 1
