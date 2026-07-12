@@ -9,7 +9,12 @@
     "bridge_url": "http://127.0.0.1:18888"
   },
   "vision": {
-    "model": "qwen3.5:4b"
+    "enabled": false,
+    "backend": "",
+    "model": "qwen3.5:4b",
+    "host": "",
+    "api_key": "",
+    "api_base": ""
   },
   "tts": {
     "engine": "gpt_sovits",
@@ -26,7 +31,17 @@
     "translate_to_jp": true,
     "voice_lang": "jp",
     "translate_api_key": "",
-    "translate_model": "deepseek-chat"
+    "translate_model": "deepseek-chat",
+    "auto_install_deps": false,
+    "api_key": "",
+    "api_base": "https://api.xiaomimimo.com/v1",
+    "model": "mimo-v2.5-tts",
+    "voice": "冰糖",
+    "style": "",
+    "voice_clone": false,
+    "clone_ref": "",
+    "clone_dir": "./voice_cache",
+    "sync_with_audio": false
   },
   "display": {
     "scale": 0.5,
@@ -43,5 +58,22 @@
     "model_dir": "./live2d/model/mea_live2d",
     "enabled": true,
     "scale": 0.15
+  },
+  "watcher": {
+    "enabled": false,
+    "allow_cloud": false,
+    "interval": {
+      "min_ms": 180000,
+      "max_ms": 360000
+    },
+    "require_confirm": true,
+    "confirm_once_session": false
+  },
+  "bubble_duration_ms": {
+    "default": 5000,
+    "reply": 8000,
+    "watch": 7000,
+    "interaction": 3000,
+    "thinking": 0
   }
 }

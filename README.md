@@ -4,6 +4,15 @@
 
 **立绘（Live2D + PNG 差分双引擎）+ 语音合成 + AI 对话 + 记忆养成** 全都有，模型和图片都已打包，下载就能用。
 注：这是AI写的，有错误直接私信我
+
+### 下载策略
+
+- **启动脚本会装基础依赖**：首次无 `.venv` 或依赖缺失时，`启动桌宠.bat` 会创建虚拟环境并 `pip/uv install -r linux_requirements.txt`（PyQt5 等）。
+- **不默认安装 uv**：本机没有 uv 时，脚本优先用系统 Python 建 `.venv`；只有设置 `MEAPET_ALLOW_DOWNLOAD=1` 才会尝试联网安装 uv。
+- **大件仍按需**：Ollama / 模型 / 词典 / TTS 重依赖在配置向导里点「安装」并二次确认后再下载；`config.json` 可设 `tts.auto_install_deps: true`。
+- **屏幕观察默认关闭**（隐私）：右键菜单手动开启；云端识图需 `watcher.allow_cloud: true`。
+- **Git LFS**：TTS 大模型权重使用 LFS 指针，克隆后需 `git lfs pull`（需本机安装 git-lfs）。
+
 ---
 
 ## 🚀 打开就玩
@@ -14,14 +23,14 @@
 
 | 阶段 | 自动做什么 | 需要你做什么 |
 |------|-----------|------------|
-| ① 装依赖 | 自动 pip install PyQt5 等 | 等几分钟 |
-| ② 配置向导 | 弹出图形化设置窗口 | 选 AI 大脑、设语音 |
-| ③ 启动桌宠 | 自动运行 pet.py | 🐱 开玩 |
+| ① 环境 | 用 uv 或系统 Python 创建 `.venv`，安装基础依赖 | 等几分钟（首次） |
+| ② 配置向导 | 无 `config.json` 时弹出设置窗口 | 选 AI 大脑、设语音 |
+| ③ 启动桌宠 | 向导完成后自动运行 `pet.py` | 🐱 开玩 |
 
-> ⚠️ Python 需要自行安装（启动脚本检测不到时会提示下载）。  
-> 推荐 [python.org](https://www.python.org/downloads/) 下载 Python 3.10~3.12，安装时勾选"Add Python to PATH"。
+> 推荐安装 [uv](https://docs.astral.sh/uv/) 或 [Python 3.10~3.12](https://www.python.org/downloads/)（勾选 "Add Python to PATH"）。  
+> 有 uv 时可不预装 Python（uv 可按需拉取解释器）；没有 uv 则需要本机 Python。
 
-> 所有下载都用**清华镜像**，国内用户下载飞快。如果哪天镜像挂了会自动切官方源。
+> pip / uv 默认用**清华镜像**，失败会回落官方源。
 
 配置向导里只用选两样东西：
 
@@ -46,7 +55,7 @@
 | 功能 | 说明 |
 |------|------|
 | 💬 **聊天** | 双击桌宠打开输入框，AI 会回复你。支持 Ollama / DeepSeek / MiMo V2.5 三种后端 |
-| 🎤 **说话** | 文字回复会合成日语语音读出来（模型已打包，中文会自动翻译后合成） |
+| 🎤 **说话** | 支持 **MiMo 云端 TTS** / 本地 VITS / GPT-SoVITS；云端无需本地语音环境 |
 | 👀 **偷看屏幕** | 它会定时看看你在干嘛，偶尔吐槽一句 |
 | 🖱️ **摸头** | 鼠标在头部左右拖拽，会有反应 |
 | 🎭 **换表情** | 右键菜单切换心情，立绘会变 |
@@ -100,14 +109,38 @@
 | 变量 | 用途 |
 |------|------|
 | `GSV_PYTHON` | GPT-SoVITS conda 环境的 python.exe 路径 |
+| `DEEPSEEK_API_KEY` | DeepSeek 对话 / 翻译（**优先于** config.json 明文） |
+| `MIMO_API_KEY` / `XIAOMIMIMO_API_KEY` | 小米 MiMo 对话 / 识图 / TTS（优先于 config） |
+| `MEAPET_API_KEY` | 通用兜底密钥 |
+| `TRANSLATE_API_KEY` | 仅 TTS 日语翻译（可选） |
+
+### 密钥怎么存更安全？
+
+**推荐：`config.json` 里 `api_key` 留空，用环境变量注入。**
+
+优先级：**环境变量 > config.json 明文**。也支持占位 `"api_key": "$ENV"` 或 `"${DEEPSEEK_API_KEY}"`。
+
+```bash
+# Linux / macOS / WSL
+export DEEPSEEK_API_KEY="sk-xxxx"
+python pet.py
+```
+
+```bat
+REM Windows
+set DEEPSEEK_API_KEY=sk-xxxx
+python pet.py
+```
+
+> 若曾经把真实 Key 写进 `config.json`：请到服务商控制台**轮换作废**旧 Key，并清空文件中的 `api_key`（该文件已 gitignore，但仍在你本机磁盘上）。
+
 
 ### 运行
 
 **🪟 Windows 用户** → 双击 `启动桌宠.bat`：
-- 没装 Python 会自动下载便携版到 `_python\` 目录
-- 第一次运行会自动打开配置向导
-- 配置完成后自动启动桌宠
-- 已装好 Python 和依赖后，再次双击直接开玩
+- 无 `.venv` 时用 **uv**（或系统 Python）创建虚拟环境并安装基础依赖
+- 第一次运行（无 `config.json`）会打开配置向导，完成后**自动**启动桌宠
+- 环境就绪后再次双击直接开玩
 
 **或者手动运行：**
 
@@ -179,7 +212,10 @@ QT_PLUGIN_PATH=/usr/lib/qt/plugins
 | **DeepSeek API** | `"backend": "deepseek"` | DeepSeek API Key | 需要 `api_key`，填入 `config.json` 或设置环境变量 |
 | **MiMo V2.5 API** | `"backend": "mimo"` | 第三方平台 API Key | 小米多模态模型，聊天+识图一体，不需要 Ollama |
 
-> 👀 **关于屏幕识图**：Ollama 和 MiMo 后端自带识图能力；DeepSeek 后端**需要额外安装 Ollama + 多模态模型**（qwen3.5:4b）才能使用偷看屏幕功能。
+> 👀 **关于屏幕识图**：可在 `config.json` 的 **`vision`** 里**单独配置**，不必与对话 `llm` 相同。未写 `vision.backend` 时回退到 `llm.backend`。  
+> - 对话 MiMo、识图 Ollama 本地：`vision.backend=ollama` + `vision.model=qwen3.5:4b`（或其它视觉/多模态模型）  
+> - 对话 Ollama、识图 MiMo 云端：`vision.backend=mimo` + `watcher.allow_cloud=true` + Key  
+> - DeepSeek 对话时，识图通常仍用 Ollama 多模态模型
 
 ### 快速判断
 
@@ -188,7 +224,7 @@ QT_PLUGIN_PATH=/usr/lib/qt/plugins
 只用 Ollama（本地）+ 日语语音     → 只需要 translate_api_key（翻译用）
 用 DeepSeek 对话 + 不开语音       → 只需要 DEEPSEEK_API_KEY
 用 DeepSeek 对话 + 日语语音       → 只需要 DEEPSEEK_API_KEY（翻译自动共用）
-用 MiMo V2.5 对话 + 日语语音      → 只需要第三方平台 API Key（MiMo 自带识图，不需要 Ollama）
+用 MiMo 对话 + MiMo 云端 TTS      → 只需要小米 MiMo API Key（聊天+识图+语音同一 Key，无需 Ollama / 本地 TTS）
 
 👀 屏幕识图功能：Ollama 和 MiMo 后端自带识图；DeepSeek 需要额外装 Ollama + 多模态模型（qwen3.5:4b）
 ```
@@ -211,35 +247,34 @@ QT_PLUGIN_PATH=/usr/lib/qt/plugins
 
 ```
 mea-pet/
-├── setup_wizard.py          # 🎯 一键配置向导（推荐先运行）
-├── pet.py                   # 主程序入口
-├── config.json              # 用户配置（不会提交到 Git）
-├── config.example.json      # 配置模板
-├── chat.py                  # LLM 对话引擎（Ollama / DeepSeek）
-├── tts.py                   # GPT-SoVITS 语音合成
-├── gsv_infer.py             # GPT-SoVITS 推理子进程
-├── live2d_widget.py         # Live2D OpenGL 渲染
-├── pet_live2d.py            # Live2D WebEngine 版
-├── renderer.py              # PNG 差分立绘渲染
-├── memory.py                # SQLite 记忆与养成系统
-├── watcher.py               # 屏幕观察模块
-├── status_panel.py          # 养成状态面板
-├── chat_input.py            # Galgame 风格输入框
-├── utils.py                 # 工具函数
-├── precache_interactions.py # 预生成互动语音缓存
-├── pre_render_voices.py     # 预合成语音
-├── weight.json              # TTS 模型权重注册表
-├── live2d/                  # Live2D 模型与 JS 资源
-│   ├── index.html
-│   ├── model/mea_live2d/    # 默认 Live2D 模型
-│   └── js/                  # Cubism SDK 与渲染库
-├── models/                  # TTS 模型权重
-│   ├── GPT_weights/         # GPT 模型（mea_pro-e50.ckpt）
-│   └── SoVITS_weights/      # SoVITS 模型（mea_pro_e24_s13704.pth）
-├── GPT-Sovits/              # TTS 参考音频（日语，normal/clam/soft 三种情绪）
-├── sprites/                 # PNG 差分立绘（已包含梅尔全套）
-└── .gitignore
+├── pet.py                   # 桌宠入口（兼容）→ meapet.desktop.app
+├── setup_wizard.py          # 配置向导入口（兼容）→ wizard/
+├── meapet/                  # 主程序包
+│   ├── config/              # config 加载 / 密钥
+│   ├── chat/                # LLM 对话
+│   ├── memory/              # SQLite 养成记忆
+│   ├── tts/                 # 语音合成（common + engines）
+│   ├── desktop/             # 桌宠 UI / mixin / workers
+│   ├── watcher/             # 屏幕观察
+│   ├── tools/               # gsv_infer / vits_infer / 预缓存脚本
+│   ├── utils.py
+│   └── paths.py             # PROJECT_ROOT
+├── wizard/                  # 配置向导 UI 分包
+├── config.example.json      # 唯一配置模板
+├── tests/                   # 单元测试
+├── models/ · live2d/ · sprites/ · GPT-Sovits/ · vits_*
+└── 启动桌宠.bat
 ```
+
+启动：
+```bash
+python pet.py
+# 或
+python -m meapet
+python setup_wizard.py
+```
+
+
 
 ---
 
@@ -281,14 +316,34 @@ mea-pet/
 
 ## 🛠️ 技术细节
 
-### Python 自动安装
+### Python / 虚拟环境（Windows，推荐 uv）
 
-启动脚本 `启动桌宠.bat` 按优先级检测 Python：
-1. **Hermes venv**（自带 PyTorch，免装依赖）
-2. **系统 PATH** / `py` 启动器
-3. **常见安装路径**（`%LOCALAPPDATA%\Programs\Python\`）
-4. **便携版** `_python\`（有 pip 则直接用）
-5. 都没有 → 从清华镜像自动下载 **Python 3.11 embeddable** 到 `_python\`，自动配置 pip
+启动脚本 `启动桌宠.bat` 用 **[uv](https://docs.astral.sh/uv/)** 管理项目环境：
+
+1. **项目 `.venv`** 存在则直接用
+2. 不存在时：`uv venv --python 3.12 .venv`（Python 版本见 `.python-version`，uv 可自动下载）
+3. 依赖：`uv pip install -r linux_requirements.txt`（默认清华镜像，失败回落官方源）
+4. 可选安装 `live2d-py`（失败则 PNG 模式）
+5. 本机没有 uv 时：设置 `MEAPET_ALLOW_DOWNLOAD=1` 后重跑，脚本会尝试安装 uv
+
+手动等价命令：
+
+```bat
+uv python install 3.12
+uv venv --python 3.12 .venv
+uv pip install -r linux_requirements.txt --python .venv\Scripts\python.exe
+.venv\Scripts\python.exe setup_wizard.py
+.venv\Scripts\python.exe pet.py
+```
+
+### MiMo 云端 TTS（推荐，无需本地语音环境）
+
+- `tts.engine: "mimo"`，调用小米 [MiMo Speech Synthesis](https://mimo.mi.com/docs/en-US/quick-start/usage-guide/audio/speech-synthesis-v2.5)
+- 默认模型 `mimo-v2.5-tts`，内置音色如 `冰糖` / `茉莉` / `Chloe`
+- **声音克隆**：`tts.voice_clone: true` 或 `model: "mimo-v2.5-tts-voiceclone"`，会把 `voice_cache/`（或 `tts.clone_ref` 指定 wav）以 `data:audio/wav;base64,...` 发给 API
+- 与对话共用 `llm.api_key` / `llm.api_base`（也可单独写 `tts.api_key`）
+- 默认**中文直出**（`translate_to_jp: false`，`voice_lang: "zh"`）；若仍想先译日语再合成可改配置
+- **不需要** PyTorch / VITS / GPT-SoVITS / `git lfs pull`
 
 ### VITS 语音引擎
 
@@ -301,7 +356,7 @@ mea-pet/
 
 - 通过子进程调用独立整合包，不污染主进程依赖
 - 支持多参考音频目录（`clam`/`normal`/`soft`）
-- 高表现力，适合需要丰富情感的语音场景
+- 高还原力，适合需要丰富情感的语音场景
 
 ### 国内加速
 
@@ -344,7 +399,8 @@ mea-pet/
 
 打开命令提示符，手动运行 `启动桌宠.bat` 查看错误信息。常见原因：
 - 网络问题导致依赖安装失败（重试或手动配置镜像）
-- Python 下载失败（检查 `_python\` 目录是否完整）
+- 未安装 uv 且本机没有 Python 3.10+（安装其一后重试）
+- 也可手动：`.venv\Scripts\python.exe -u pet.py` 看完整报错；日志见 `meapet_boot.log`
 </details>
 
 <details>
@@ -392,8 +448,8 @@ mea-pet/
 
 - Live2D 渲染需要支持 OpenGL 的显卡
 - GPT-SoVITS 引擎需要单独下载整合包（~2GB），VITS 引擎已内置
-- 屏幕观察：Ollama 后端需额外下载多模态模型（qwen3.5:4b 约 3GB）；MiMo 后端云端自带识图能力，无需下载
-- 嵌入版 Python（`_python\`）首次安装 pip 需要联网
+- 屏幕观察：Ollama 后端需额外下载多模态模型（如 qwen3.5:4b）；MiMo 后端云端自带识图能力，无需下载
+- 首次创建 `.venv` / 安装依赖需要联网（默认清华镜像，失败回落官方源）
 
 ---
 

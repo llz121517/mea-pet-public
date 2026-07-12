@@ -6,21 +6,20 @@ Desktop pet app (PyQt5 transparent window) with AI chat, screen watching, TTS vo
 ## Entry point & config
 - **Entry**: `python pet.py` (Linux: `QT_QPA_PLATFORM=xcb python pet.py`)
 - **Setup**: `python setup_wizard.py` (GUI) or copy `config.example.json` → `config.json`
-- `config.json` is **gitignored**; `config_settings.json` (bubble durations, TTS sync) is tracked
+- `config.json` is **gitignored**; bubble durations live in `config.json` (`bubble_duration_ms`); example in `config.example.json`
 - Python version: **3.10–3.12** (`.python-version` = 3.10.20). 3.12+ needs `numpy<2` and `setuptools==69.5.1`
 
 ## Architecture
 
-| File | Role |
+| Path | Role |
 |------|------|
-| `pet.py` | Main app (~1880 lines). MeaPet QWidget, all UI, worker threads, event wiring |
-| `chat.py` | LLM engine: Ollama or DeepSeek API. History ≤8 msgs. Memory extraction every 3 turns |
-| `memory.py` | SQLite (`mea_memory.db`): chat history, affection (90-100 scale), memories, events |
-| `watcher.py` | ScreenWatch QThread: 3-tier (capture→summary→decision→reply). Ollama vision models |
-| `tts.py` | GPT-SoVITS TTS via subprocess. Auto-translates CN→JP, caches to `voice_cache/` |
-| `renderer.py` | PNG sprite rendering with expression map and blink animation |
-| `live2d_widget.py` | Live2D Cubism 3+ via `live2d-py` + QOpenGLWidget. Requires compiled binary |
-| `utils.py` | `safe_print` (stderr), `log_error` (file), `ensure_utf8_stdout` (Windows) |
+| `pet.py` / `meapet/desktop/app.py` | Thin entry + desktop pet (mixins: chat/watch/render/audio) |
+| `meapet/chat/engine.py` | LLM engine (Ollama / DeepSeek / MiMo), async httpx |
+| `meapet/memory/db.py` | SQLite memory + affection (`mea_memory.db`, RLock) |
+| `meapet/watcher/screen.py` | Screen watch QThread + privacy gates |
+| `meapet/tts/` | GSV / VITS / MiMo TTS engines |
+| `wizard/` | Setup wizard pages |
+| `meapet/utils.py` | `safe_print`, secret redaction, watcher helpers |
 
 ## Critical gotchas
 
@@ -37,7 +36,6 @@ Other modules must NOT wrap stdout again — the wrapper is shared; re-wrapping 
 
 ### Config files are separate
 - `config.json` — user-editable (LLM backend, TTS, character, display). gitignored.
-- `config_settings.json` — bubble durations per category, TTS sync flag. Tracked in git.
 - `weight.json` — TTS model weight registry. Tracked.
 
 ### No tests, no linter, no CI
