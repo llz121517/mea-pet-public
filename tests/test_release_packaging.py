@@ -11,11 +11,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 import zipfile
 
 import pytest
 
+from scripts import package_release
 from scripts.package_release import (
     PackagingError,
     SensitiveContentError,
@@ -268,3 +271,157 @@ def test_missing_runtime_entrypoint_fails_fast(tmp_path: Path) -> None:
             revision="abc1234",
             source_epoch=1_704_067_200,
         )
+
+
+def test_discover_tracked_files_reads_only_git_index(tmp_path: Path) -> None:
+    tracked = _write(tmp_path, "meapet/tracked.py", "tracked = True\n")
+    _write(tmp_path, "config.json", '{"api_key": "private"}\n')
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", tracked], cwd=tmp_path, check=True)
+
+    discovered = package_release.discover_tracked_files(tmp_path)
+
+    assert discovered == (tracked,)
+
+
+def test_discover_tracked_files_reports_git_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing_git(*_args, **_kwargs):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(package_release.subprocess, "run", missing_git)
+    with pytest.raises(PackagingError, match="无法读取 Git 文件清单"):
+        package_release.discover_tracked_files(tmp_path)
+
+
+def test_discover_tracked_files_rejects_empty_index(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        package_release.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout=b""),
+    )
+    with pytest.raises(PackagingError, match="文件清单为空"):
+        package_release.discover_tracked_files(tmp_path)
+
+
+def test_cli_dry_run_and_build_report_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project = tmp_path / "project"
+    output = tmp_path / "release"
+    candidates = _make_project(project)
+    monkeypatch.setattr(
+        package_release,
+        "discover_tracked_files",
+        lambda _root: tuple(candidates),
+    )
+
+    dry_run = package_release.main(["--root", str(project), "--dry-run"])
+    dry_output = capsys.readouterr().out
+    assert dry_run == 0
+    assert "dry-run 未生成任何文件" in dry_output
+    assert "LFS 指针" in dry_output
+    assert not output.exists()
+
+    built = package_release.main(
+        ["--root", str(project), "--output-dir", str(output)]
+    )
+    build_output = capsys.readouterr().out
+    assert built == 0
+    assert "打包完成" in build_output
+    assert "SHA-256" in build_output
+    assert len(list(output.glob("*.zip"))) == 1
+    assert len(list(output.glob("*.sha256"))) == 1
+
+
+def test_cli_returns_nonzero_for_packaging_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        package_release,
+        "discover_tracked_files",
+        lambda _root: (_ for _ in ()).throw(PackagingError("fixture failure")),
+    )
+
+    assert package_release.main(["--root", str(tmp_path)]) == 1
+    assert "fixture failure" in capsys.readouterr().err
+
+
+def test_cli_returns_interrupt_exit_code(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        package_release,
+        "discover_tracked_files",
+        lambda _root: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    assert package_release.main(["--root", str(tmp_path)]) == 130
+    assert "已取消打包" in capsys.readouterr().err
+
+
+def test_invalid_source_date_epoch_fails_with_clear_message(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidates = _make_project(tmp_path)
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "tomorrow")
+
+    with pytest.raises(PackagingError, match="SOURCE_DATE_EPOCH 必须是整数秒"):
+        build_release_archive(
+            tmp_path,
+            tmp_path / "dist",
+            candidates=candidates,
+            version="1.2.3",
+            revision="abc1234",
+        )
+
+
+def test_symbolic_link_candidate_is_rejected(tmp_path: Path) -> None:
+    target = tmp_path / "target.py"
+    target.write_text("safe = True\n", encoding="utf-8")
+    link = tmp_path / "meapet" / "linked.py"
+    link.parent.mkdir(parents=True)
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("当前文件系统不允许创建符号链接")
+
+    with pytest.raises(PackagingError, match="不能是符号链接"):
+        collect_release_files(tmp_path, ["meapet/linked.py"])
+
+
+def test_collection_handles_duplicate_missing_and_backup_candidates(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "pet.py", "print('pet')\n")
+    _write(tmp_path, "config.local.bak", "private\n")
+
+    selection = collect_release_files(
+        tmp_path,
+        [
+            "pet.py",
+            "pet.py",
+            "meapet/missing.py",
+            "config.local.bak",
+            "unrelated.txt",
+        ],
+    )
+
+    assert selection.included_paths == ("pet.py",)
+    assert set(selection.excluded_paths) == {
+        "config.local.bak",
+        "meapet/missing.py",
+        "unrelated.txt",
+    }
