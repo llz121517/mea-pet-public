@@ -1256,6 +1256,83 @@ class UiRefactorTests(unittest.TestCase):
         self.assertTrue(composer.send_button.isEnabled())
         self.assertFalse(composer.input.isReadOnly())
 
+    def test_chat_completion_releases_visible_busy_input(self) -> None:
+        from meapet.desktop.chat_flow import PetChatFlowMixin
+        from meapet.desktop.chat_input import ChatInputBox
+
+        class Engine:
+            _MOOD_TAGS = {"neutral"}
+
+            @staticmethod
+            def take_voice_text():
+                return ""
+
+            @staticmethod
+            def take_tts_style():
+                return ""
+
+        class Worker:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def start(self):
+                pass
+
+        class Host(PetChatFlowMixin):
+            chat_engine = Engine()
+            tts = object()
+            _awaiting_reply = True
+
+            def show_reply(self, *_args, **_kwargs):
+                pass
+
+            def _detect_mood(self, _text):
+                return "neutral"
+
+            def _ensure_tts_poll(self):
+                pass
+
+            def _do_memory_ops(self, *_args):
+                pass
+
+        host = Host()
+        host._chat_input = self._track(ChatInputBox())
+        host._chat_input.set_busy(True, "还在想上一条…稍等喵")
+
+        with patch("meapet.desktop.chat_flow.TTSWorker", Worker), patch(
+            "meapet.desktop.chat_flow.QTimer.singleShot"
+        ):
+            host._on_chat_done("回复完成", "neutral")
+
+        self.assertFalse(host._awaiting_reply)
+        self.assertFalse(host._chat_input.input.isReadOnly())
+        self.assertTrue(host._chat_input.send_button.isEnabled())
+
+    def test_watcher_completion_releases_visible_busy_input(self) -> None:
+        from meapet.desktop.chat_flow import PetChatFlowMixin
+        from meapet.desktop.chat_input import ChatInputBox
+        from meapet.desktop.watch_ctrl import PetWatcherMixin
+
+        class Host(PetWatcherMixin, PetChatFlowMixin):
+            _awaiting_reply = True
+            config = {"bubble_duration_ms": {"default": 5000}}
+
+            def _show_bubble(self, *_args, **_kwargs):
+                pass
+
+            def _start_watcher_timer(self):
+                pass
+
+        host = Host()
+        host._chat_input = self._track(ChatInputBox())
+        host._chat_input.set_busy(True, "还在识图…稍等喵")
+
+        host._on_watch_silent()
+
+        self.assertFalse(host._awaiting_reply)
+        self.assertFalse(host._chat_input.input.isReadOnly())
+        self.assertTrue(host._chat_input.send_button.isEnabled())
+
 
     def test_bubble_mood_accent_changes_border_color(self) -> None:
         from meapet.desktop.widgets import DialogueBox, MOOD_BORDER_COLORS
@@ -1294,6 +1371,41 @@ class UiRefactorTests(unittest.TestCase):
         os.environ.pop("MEAPET_REDUCED_MOTION", None)
         self.assertTrue(resolve_reduced_motion(True))
         self.assertFalse(resolve_reduced_motion(False) and os.environ.get("MEAPET_REDUCED_MOTION") == "force")
+
+    def test_reduced_motion_dismisses_bubble_without_fade_timer(self) -> None:
+        from meapet.desktop.widgets import DialogueBox
+
+        dismissed = []
+        with patch.dict(os.environ, {"MEAPET_REDUCED_MOTION": "1"}):
+            bubble = self._track(DialogueBox())
+            bubble.dismissed.connect(lambda: dismissed.append(True))
+            bubble.show_text("立即消失", duration_ms=0)
+            bubble._start_fadeout()
+
+        self.assertFalse(bubble._anim_timer.isActive())
+        self.assertFalse(bubble.isVisible())
+        self.assertEqual(dismissed, [True])
+
+    def test_loading_disabled_vision_config_keeps_advanced_options_collapsed(self) -> None:
+        from wizard.page_vision import VisionPage
+
+        page = self._track(VisionPage())
+        page.show()
+        QApplication.processEvents()
+        page.apply_config({}, {"enabled": False})
+        QApplication.processEvents()
+
+        self.assertFalse(page.advanced_toggle.isChecked())
+        self.assertTrue(page.advanced_frame.isHidden())
+        for widget in (
+            page.model_label,
+            page.model_combo,
+            page.cloud_box,
+            page.min_min_input,
+            page.max_min_input,
+        ):
+            with self.subTest(widget=widget.objectName()):
+                self.assertFalse(widget.isVisibleTo(page))
 
     def test_tts_engine_details_are_collapsible(self) -> None:
         from wizard.page_tts import TTSPage
