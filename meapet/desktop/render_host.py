@@ -624,6 +624,8 @@ class PetRenderHostMixin:
         )
 
     def _apply_hit_region(self):
+        ws=8     #椭圆大小
+        ra=2.0     #宽：高（好吧不是严格的）
         if sys.platform == "win32":
             try:
                 import win32gui
@@ -632,8 +634,8 @@ class PetRenderHostMixin:
                 if not (w > 0 and h > 0):
                     return
                 if self._use_live2d:
-                    m = w // 16
-                    t = h // 16
+                    m = w // (ws//ra)
+                    t = h // ws
                     rgn = win32gui.CreateEllipticRgnIndirect((m, t, w - m, h - t))
                 else:
                     rgn = win32gui.CreateRoundRectRgn(0, 0, w, h, 0, 0)
@@ -647,7 +649,8 @@ class PetRenderHostMixin:
             return
         if self._use_live2d:
             path = QPainterPath()
-            path.addEllipse(QRectF(w // 16, h // 16, w - w // 8, h - h // 8))
+            mx,my=w//ws*ra,h//ws
+            path.addEllipse(QRectF(mx, my, w - 2*mx, h - 2*my))
             region = QRegion(path.toFillPolygon().toPolygon())
         else:
             region = QRegion(0, 0, w, h)

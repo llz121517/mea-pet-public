@@ -429,6 +429,7 @@ class DialogueBox(QWidget):
         clean_text = re.sub(r'【.*?】', '', text).strip()
         self._hide_timer.stop()
 
+        # 1. 设置文本
         self.text_label.setText(clean_text)
         self.text_label.setWordWrap(True)
         self.text_label.ensurePolished()
@@ -512,11 +513,8 @@ class DialogueBox(QWidget):
         self._fade_out = False
         self._dismissed_emitted = False
         self._set_visual_opacity(initial_opacity)
-
         self.show()
         self.raise_()
-
-        # 自动隐藏（0=持续显示，不自动隐藏）
         if duration_ms > 0:
             self._hide_timer.start(duration_ms)
 

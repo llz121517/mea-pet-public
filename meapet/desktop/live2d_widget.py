@@ -44,8 +44,8 @@ class Live2DModel:
         self.widget = None  # Live2DWidget 引用
         self._loaded = False
         self._current_expression = "001"  # 兼容接口
-        
-        
+
+
 
         # 找 model3.json
         self._model_json = None
@@ -179,12 +179,11 @@ class Live2DWidget(QOpenGLWidget):
         self._drag_pointer_origin = None
         self._drag_window_origin = None
 
-        self.resize(400, 660)
-        
+        self.resize(525, 735)
+
         # 3. 【删除】这行代码，否则鼠标事件无法触发
         # self.setAttribute(Qt.WA_TransparentForMouseEvents, True) 
         self.installEventFilter(self)
-
 
     def eventFilter(self, obj, event):
         # 仅处理鼠标按下事件（穿透判定）
@@ -253,7 +252,7 @@ class Live2DWidget(QOpenGLWidget):
     def _fit_model_to_window(self, model):
         """用 Resize（max 逻辑填满窗口）+ 补偿透明边距"""
         model.Resize(self.width(), self.height())
-    
+
     def resizeGL(self, w, h):
         try:
             from OpenGL.GL import glViewport
