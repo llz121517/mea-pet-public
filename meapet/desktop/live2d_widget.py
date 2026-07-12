@@ -15,6 +15,7 @@ except ImportError:  # optional dependency
     LIVE2D_AVAILABLE = False
 from PyQt5.QtCore import QEvent
 from PyQt5.QtGui import QSurfaceFormat
+from PyQt5.QtWidgets import QVBoxLayout, QWidget
 
 # 在 Windows 下可选导入 win32api（DLL 缺失时不阻塞启动）
 if sys.platform == "win32":
@@ -163,13 +164,12 @@ class Live2DWidget(QOpenGLWidget):
         self._dragging_window = False
         self._drag_start_global_pos = None
 
-        self.resize(400, 660)
+        self.resize(525, 735)
         
         # 3. 【删除】这行代码，否则鼠标事件无法触发
         # self.setAttribute(Qt.WA_TransparentForMouseEvents, True) 
         self.installEventFilter(self)
-
-
+        
     def eventFilter(self, obj, event):
         # 仅处理鼠标按下事件（穿透判定）
         if obj == self and event.type() == QEvent.MouseButtonPress:
@@ -196,7 +196,7 @@ class Live2DWidget(QOpenGLWidget):
         from OpenGL.GL import glClearColor, glEnable, glBlendFunc, GL_BLEND, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA
         
         # 1. 设置透明清屏颜色
-        glClearColor(0.0, 0.0, 0.0, 0.0)  
+        glClearColor(0.0, 0.0, 0.0, 0.0)  #记得删记得删记~得~删~（没事了）
         
         # 2. 显式开启 Alpha 混合，防止 Live2D 渲染出黑边
         glEnable(GL_BLEND)
@@ -215,7 +215,7 @@ class Live2DWidget(QOpenGLWidget):
     def _fit_model_to_window(self, model):
         """用 Resize（max 逻辑填满窗口）+ 补偿透明边距"""
         model.Resize(self.width(), self.height())
-    
+        
     def resizeGL(self, w, h):
         from OpenGL.GL import glViewport
         # 高DPI下需要用物理像素设置视口
@@ -245,10 +245,10 @@ class Live2DWidget(QOpenGLWidget):
             _s.stderr.write(f"[PAINT] frame={self._dbg_frame} alive\n")
             _s.stderr.flush()
         
-        from OpenGL.GL import glClear, GL_COLOR_BUFFER_BIT, GL_DEPTH_BUFFER_BIT
+        from OpenGL.GL import glClear, GL_COLOR_BUFFER_BIT, GL_DEPTH_BUFFER_BIT,glViewport
         # 强制清空颜色缓冲，确保没有残留的黑色像素
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT) 
-        
+        glViewport(0, -60, self.width(), self.height())
         live2d.clearBuffer()
         
         # 每帧从系统获取光标全局坐标，映射后驱动眼球+身体追踪
