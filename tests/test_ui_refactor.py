@@ -1214,6 +1214,36 @@ class UiRefactorTests(unittest.TestCase):
         self.assertEqual(dialog.result(), QDialog.Accepted)
         self.assertFalse(dialog.auto_cancelled)
 
+    def test_capture_consent_lets_user_override_scope_for_this_request_only(self) -> None:
+        from meapet.desktop.dialogs import CaptureScopeConsentDialog
+
+        dialog = self._track(
+            CaptureScopeConsentDialog(
+                requested_scope="full_screen",
+                timeout_seconds=15,
+            )
+        )
+        self.assertEqual(dialog.scope_combo.currentData(), "full_screen")
+        dialog.scope_combo.setCurrentIndex(
+            dialog.scope_combo.findData("region")
+        )
+        dialog.region_x.setValue(-120)
+        dialog.region_y.setValue(40)
+        dialog.region_width.setValue(1280)
+        dialog.region_height.setValue(720)
+
+        dialog.show()
+        dialog._timer.stop()
+        dialog.allow_button.click()
+
+        self.assertEqual(dialog.result(), QDialog.Accepted)
+        self.assertEqual(dialog.approval.scope, "region")
+        self.assertEqual(
+            dialog.approval.region,
+            {"x": -120, "y": 40, "width": 1280, "height": 720},
+        )
+        self.assertEqual(dialog.approval.application, "")
+
     def test_watcher_cloud_confirmation_uses_themed_safe_dialog(self) -> None:
         from meapet.desktop.watch_ctrl import PetWatcherMixin
 

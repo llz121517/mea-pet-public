@@ -252,6 +252,59 @@ class TestControlPresentation(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["image"]["data"])
         self.assertNotIn("path", repr(result).lower())
 
+    async def test_local_confirmation_can_narrow_agent_capture_for_one_request(self):
+        from PIL import Image
+        from meapet.desktop.dialogs import CaptureApproval
+        from meapet.watcher.capture import CapturedImage
+
+        host = self._host()
+        host._confirm_control_capture = lambda _request: CaptureApproval(
+            scope="region",
+            region={"x": 10, "y": 20, "width": 300, "height": 200},
+            application="",
+        )
+        task = asyncio.create_task(
+            host._control_broker.capture_screen(
+                scope="full_screen",
+                region=None,
+                application="",
+                request_id="capture-narrowed",
+            )
+        )
+        await asyncio.sleep(0)
+
+        class ImmediateThread:
+            def __init__(self, *, target, **_kwargs):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        captured = CapturedImage(
+            image=Image.new("RGB", (300, 200), "red"),
+            metadata={"scope": "region", "width": 300, "height": 200},
+        )
+        with (
+            mock.patch(
+                "meapet.desktop.control_bridge.capture_screen_image",
+                return_value=captured,
+            ) as capture,
+            mock.patch(
+                "meapet.desktop.control_bridge.threading.Thread",
+                ImmediateThread,
+            ),
+        ):
+            host._poll_control()
+
+        result = await task
+        capture.assert_called_once_with(
+            scope="region",
+            region={"x": 10, "y": 20, "width": 300, "height": 200},
+            application="",
+        )
+        self.assertEqual(result["status"], "approved")
+        self.assertEqual(result["metadata"]["scope"], "region")
+
     async def test_proactive_say_enters_isolated_timeline_as_complete_turn(self):
         from meapet.conversation.timeline import ConversationKey, ConversationTimeline
 
