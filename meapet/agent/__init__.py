@@ -9,9 +9,11 @@ from .base import (
     TurnFailed,
 )
 from .hermes import HermesAdapter, HermesCapabilities, HermesConfig
+from .presentation import AgentTurnPresentation
 
 __all__ = [
     "AgentTurnRequest",
+    "AgentTurnPresentation",
     "FormatRepairRequired",
     "HermesAdapter",
     "HermesCapabilities",

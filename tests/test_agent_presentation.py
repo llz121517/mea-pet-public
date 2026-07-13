@@ -254,6 +254,64 @@ class TestAgentChatWorker(unittest.TestCase):
         self.assertEqual(len(final_batch), 1)
         self.assertIsInstance(final_batch[0], TurnCompleted)
 
+    def test_worker_captures_adapter_error_and_supports_cleanup(self):
+        from meapet.agent.base import AgentTurnRequest
+        from meapet.desktop.workers import AgentChatWorker
+
+        class Adapter:
+            async def stream_turn(self, _request):
+                raise RuntimeError("stream broke")
+                yield  # pragma: no cover - keeps this an async generator
+
+            async def cancel(self, _turn_id):
+                pass
+
+        worker = AgentChatWorker(
+            Adapter(),
+            AgentTurnRequest(turn_id="turn-error", user_text="你好"),
+        )
+        worker.start()
+        deadline = time.time() + 2
+        while not worker.done and time.time() < deadline:
+            time.sleep(0.005)
+
+        self.assertTrue(worker.done)
+        self.assertFalse(worker.isRunning())
+        self.assertIn("RuntimeError", worker.error or "")
+        self.assertEqual(worker.take_events(), ())
+        worker.wait(50)
+        worker.deleteLater()
+        self.assertIsNone(worker._future)
+
+    def test_worker_terminate_cancels_future_and_notifies_adapter(self):
+        from meapet.agent.base import AgentTurnRequest
+        from meapet.desktop.workers import AgentChatWorker
+
+        cancelled = []
+
+        class Adapter:
+            async def stream_turn(self, _request):
+                await __import__("asyncio").sleep(10)
+                yield object()
+
+            async def cancel(self, turn_id):
+                cancelled.append(turn_id)
+
+        worker = AgentChatWorker(
+            Adapter(),
+            AgentTurnRequest(turn_id="turn-stop", user_text="停止"),
+        )
+        worker.start()
+        self.assertTrue(worker.isRunning())
+        worker.terminate()
+        deadline = time.time() + 2
+        while not cancelled and time.time() < deadline:
+            time.sleep(0.005)
+        worker.wait(100)
+
+        self.assertEqual(cancelled, ["turn-stop"])
+        self.assertTrue(worker.done)
+
 
 class TestDialogueBubbleStreaming(unittest.TestCase):
     @classmethod

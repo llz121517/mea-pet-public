@@ -721,6 +721,54 @@ class DialogueBubbleStack(QObject):
         self.changed.emit()
         return bubble
 
+    def begin_message(
+        self,
+        text: str = "",
+        *,
+        mood: str | None = None,
+    ) -> DialogueBox:
+        """创建一个可被后续增量更新的持久气泡。"""
+        return self.show_message(text, duration_ms=0, mood=mood)
+
+    def update_message(
+        self,
+        bubble: DialogueBox,
+        text: str,
+        *,
+        mood: str | None = None,
+    ) -> bool:
+        """原位更新流式气泡，不创建新的栈条目。"""
+        if bubble not in self._bubbles:
+            return False
+        bubble.show_text(
+            text,
+            duration_ms=0,
+            initial_opacity=bubble.visualOpacity,
+            mood=mood,
+        )
+        self.changed.emit()
+        return True
+
+    def finalize_message(
+        self,
+        bubble: DialogueBox,
+        text: str,
+        *,
+        duration_ms: int,
+        mood: str | None = None,
+    ) -> bool:
+        """完成流式气泡并启动最终展示倒计时。"""
+        if bubble not in self._bubbles:
+            return False
+        bubble.show_text(
+            text,
+            duration_ms=max(0, int(duration_ms)),
+            initial_opacity=bubble.visualOpacity,
+            mood=mood,
+        )
+        self.changed.emit()
+        return True
+
     def _discard(self, bubble: DialogueBox) -> None:
         if bubble not in self._bubbles:
             return
