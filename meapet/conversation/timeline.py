@@ -100,11 +100,20 @@ class ConversationTimeline:
         max_turns: int = 5,
         *,
         clock: Callable[[], float] = time.time,
+        terminal_callback: Callable[[TurnTranscript], None] | None = None,
     ) -> None:
-        self.max_turns = max(1, min(int(max_turns), 100))
+        self.max_turns = max(0, min(int(max_turns), 100))
         self._clock = clock
+        self._terminal_callback = terminal_callback
         self._lock = threading.RLock()
         self._turns: dict[ConversationKey, OrderedDict[str, _TurnState]] = {}
+
+    def set_terminal_callback(
+        self,
+        callback: Callable[[TurnTranscript], None] | None,
+    ) -> None:
+        with self._lock:
+            self._terminal_callback = callback
 
     def start_turn(
         self,
@@ -118,19 +127,22 @@ class ConversationTimeline:
         if not safe_id:
             raise ValueError("turn_id is required")
         now = self._clock()
+        transient = _TurnState(
+            conversation_key=key,
+            turn_id=safe_id,
+            source=str(source or "system").strip() or "system",
+            user_text=str(user_text or "").strip(),
+            created_at=now,
+            updated_at=now,
+        )
+        if self.max_turns == 0:
+            return transient.snapshot()
         with self._lock:
             bucket = self._turns.setdefault(key, OrderedDict())
             existing = bucket.get(safe_id)
             if existing is not None:
                 return existing.snapshot()
-            bucket[safe_id] = _TurnState(
-                conversation_key=key,
-                turn_id=safe_id,
-                source=str(source or "system").strip() or "system",
-                user_text=str(user_text or "").strip(),
-                created_at=now,
-                updated_at=now,
-            )
+            bucket[safe_id] = transient
             while len(bucket) > self.max_turns:
                 bucket.popitem(last=False)
             return bucket[safe_id].snapshot()
@@ -223,6 +235,8 @@ class ConversationTimeline:
         status: str,
         error_text: str,
     ) -> bool:
+        snapshot = None
+        callback = None
         with self._lock:
             state = self._active(key, turn_id)
             if state is None:
@@ -230,7 +244,71 @@ class ConversationTimeline:
             state.status = status
             state.error_text = str(error_text or "").strip()
             state.updated_at = self._clock()
-            return True
+            snapshot = state.snapshot()
+            callback = self._terminal_callback
+        if callback is not None and snapshot is not None:
+            callback(snapshot)
+        return True
+
+    def restore(self, turn: TurnTranscript) -> bool:
+        """恢复一条已持久化投影，不再次触发持久化回调。"""
+        if not isinstance(turn, TurnTranscript):
+            raise TypeError("turn must be a TurnTranscript")
+        if self.max_turns == 0:
+            return False
+        state = _TurnState(
+            conversation_key=turn.conversation_key,
+            turn_id=turn.turn_id,
+            source=turn.source,
+            user_text=turn.user_text,
+            created_at=float(turn.created_at),
+            updated_at=float(turn.updated_at),
+            status=turn.status,
+            error_text=turn.error_text,
+            segments={segment.index: segment for segment in turn.segments},
+            system_entries=list(turn.system_entries),
+        )
+        with self._lock:
+            bucket = self._turns.setdefault(turn.conversation_key, OrderedDict())
+            bucket[turn.turn_id] = state
+            ordered = sorted(
+                bucket.items(),
+                key=lambda item: (item[1].created_at, item[1].updated_at),
+            )
+            self._turns[turn.conversation_key] = OrderedDict(ordered)
+            while len(self._turns[turn.conversation_key]) > self.max_turns:
+                self._turns[turn.conversation_key].popitem(last=False)
+        return True
+
+    def history(
+        self,
+        key: ConversationKey,
+        *,
+        max_turns: int = 5,
+    ) -> tuple[dict[str, str], ...]:
+        """从完整用户交互投影重建发往无状态后端的最近消息。"""
+        limit = max(0, min(int(max_turns), 50))
+        if limit == 0:
+            return ()
+        with self._lock:
+            turns = tuple(self._turns.get(key, {}).values())
+        complete = [
+            turn.snapshot()
+            for turn in turns
+            if turn.status == "complete"
+            and turn.source == "user_reply"
+            and turn.user_text
+            and turn.snapshot().display_text
+        ][-limit:]
+        messages = []
+        for turn in complete:
+            messages.extend(
+                (
+                    {"role": "user", "content": turn.user_text},
+                    {"role": "assistant", "content": turn.display_text},
+                )
+            )
+        return tuple(messages)
 
     def get(self, key: ConversationKey, turn_id: str) -> TurnTranscript | None:
         with self._lock:

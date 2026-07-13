@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Mapping, Tuple
 
 from meapet.conversation.output_protocol import ParseResult
+from meapet.conversation.timeline import ConversationKey
 
 
 _IMAGE_MEDIA_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
@@ -67,6 +68,8 @@ class AgentTurnRequest:
     frontend_context: Mapping[str, object] = field(default_factory=dict)
     tts_enabled: bool = False
     attachments: Tuple[ImageAttachment, ...] = ()
+    conversation_key: ConversationKey | None = None
+    generation_id: int = 0
 
     def __post_init__(self) -> None:
         turn_id = str(self.turn_id or "").strip()
@@ -79,6 +82,19 @@ class AgentTurnRequest:
         object.__setattr__(self, "history", tuple(self.history or ()))
         object.__setattr__(self, "frontend_context", dict(self.frontend_context or {}))
         object.__setattr__(self, "tts_enabled", bool(self.tts_enabled))
+        conversation_key = self.conversation_key
+        if conversation_key is not None and not isinstance(
+            conversation_key,
+            ConversationKey,
+        ):
+            raise TypeError("conversation_key must be a ConversationKey")
+        try:
+            generation_id = int(self.generation_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("generation_id must be an integer") from exc
+        if generation_id < 0:
+            raise ValueError("generation_id cannot be negative")
+        object.__setattr__(self, "generation_id", generation_id)
         attachments = tuple(self.attachments or ())
         if len(attachments) > 4 or any(
             not isinstance(item, ImageAttachment) for item in attachments

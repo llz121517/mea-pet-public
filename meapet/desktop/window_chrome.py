@@ -516,6 +516,10 @@ class PetWindowChromeMixin:
             except Exception:
                 pass
 
+        invalidate = getattr(self, "_invalidate_active_conversation", None)
+        if callable(invalidate):
+            invalidate()
+
         llm = self.config.setdefault("llm", {})
         agent = llm.setdefault("agent", {})
         agent["session_id"] = f"meapet-{uuid.uuid4().hex}"

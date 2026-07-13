@@ -219,15 +219,51 @@ class MeaPet(
         self._schedule_memory_maintenance()
         from meapet.conversation.timeline import ConversationTimeline
 
+        llm_config = self.config.get("llm") or {}
+        mode = str(llm_config.get("mode") or "direct").strip().lower()
         ui_config = self.config.get("ui") or {}
         try:
             timeline_turns = int(ui_config.get("timeline_turns", 5))
         except (TypeError, ValueError):
             timeline_turns = 5
+        timeline_turns = max(0, min(timeline_turns, 100))
+        if mode == "agent":
+            try:
+                history_turns = int(
+                    (llm_config.get("agent") or {}).get("history_turns", 5)
+                )
+            except (TypeError, ValueError):
+                history_turns = 5
+            timeline_turns = max(timeline_turns, max(0, min(history_turns, 50)))
+
+        def persist_turn(turn):
+            try:
+                self.memory.save_conversation_turn(
+                    turn,
+                    max_turns=timeline_turns,
+                )
+            except Exception as exc:
+                log.warning(
+                    f"[timeline] 保存最近对话失败: {type(exc).__name__}"
+                )
+
         if not hasattr(self, "_conversation_timeline"):
-            self._conversation_timeline = ConversationTimeline(timeline_turns)
-        llm_config = self.config.get("llm") or {}
-        mode = str(llm_config.get("mode") or "direct").strip().lower()
+            self._conversation_timeline = ConversationTimeline(
+                timeline_turns,
+                terminal_callback=persist_turn,
+            )
+        else:
+            self._conversation_timeline.max_turns = timeline_turns
+            self._conversation_timeline.set_terminal_callback(persist_turn)
+        if not getattr(self, "_conversation_timeline_loaded", False):
+            try:
+                for turn in self.memory.load_conversation_turns():
+                    self._conversation_timeline.restore(turn)
+                self._conversation_timeline_loaded = True
+            except Exception as exc:
+                log.warning(
+                    f"[timeline] 恢复最近对话失败: {type(exc).__name__}"
+                )
         self._agent_history = []
         self._agent_tts_workers = {}
         self._agent_bubbles = {}
@@ -255,7 +291,38 @@ class MeaPet(
             self.chat_engine = create_engine_from_config(self.config, self.memory)
             if self.chat_engine.backend == "ollama" and self.chat_engine.available:
                 QTimer.singleShot(2000, self._show_warmup_status)
-        self._refresh_conversation_key()
+        conversation_key = self._refresh_conversation_key()
+        if mode == "agent":
+            agent_config = llm_config.get("agent") or {}
+            try:
+                history_turns = max(
+                    0,
+                    min(int(agent_config.get("history_turns", 5)), 50),
+                )
+            except (TypeError, ValueError):
+                history_turns = 5
+            self._agent_history = list(
+                self._conversation_timeline.history(
+                    conversation_key,
+                    max_turns=history_turns,
+                )
+            )
+        else:
+            restored_history = list(
+                self._conversation_timeline.history(
+                    conversation_key,
+                    max_turns=7,
+                )
+            )
+            if restored_history and self.chat_engine is not None:
+                lock = getattr(self.chat_engine, "_history_lock", None)
+                if lock is None:
+                    system = self.chat_engine.history[0]
+                    self.chat_engine.history = [system] + restored_history
+                else:
+                    with lock:
+                        system = self.chat_engine.history[0]
+                        self.chat_engine.history = [system] + restored_history
         QTimer.singleShot(1200, self._maybe_show_first_run_hint)
 
     def _apply_motion_preference(self) -> None:

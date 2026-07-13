@@ -489,6 +489,11 @@ def normalize_config(config: dict) -> dict:
     # UI 一次性引导等非敏感本地状态
     ui = cfg.get("ui") if isinstance(cfg.get("ui"), dict) else {}
     ui["first_run_hint_shown"] = bool(ui.get("first_run_hint_shown", False))
+    try:
+        timeline_turns = int(ui.get("timeline_turns", 5))
+    except (TypeError, ValueError):
+        timeline_turns = 5
+    ui["timeline_turns"] = max(0, min(timeline_turns, 100))
     cfg["ui"] = ui
 
     # TTS：音频同步 + 可选固定 GPT-SoVITS 参考音频
