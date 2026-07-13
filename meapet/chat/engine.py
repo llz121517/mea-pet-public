@@ -10,7 +10,10 @@ import socket  # noqa: F401  # 必须在 PyQt 之前导入（避免 QtNetwork ho
 import threading
 from typing import TYPE_CHECKING, Dict, List, Tuple
 
+from meapet.log import get_color_logger
 from meapet.utils import debug_enabled, redact_mapping, redact_text
+
+log = get_color_logger("chat")
 
 if TYPE_CHECKING:
     from meapet.memory.db import MeaMemory
@@ -389,6 +392,7 @@ class ChatEngine:
                 ctx = self.memory.build_context_prompt(current_query=message)
                 full_system = SYSTEM_PROMPT + "\n\n" + ctx
                 self.history[0] = {"role": "system", "content": full_system}
+                log.debug(f"[Chat] 注入记忆上下文，prompt 长度={len(full_system)}，记忆内容={ctx}")
 
             # 保持历史不超 8 条（减少上下文长度，加速推理）
             if len(self.history) > 8:
@@ -434,6 +438,7 @@ class ChatEngine:
                     full_system += f"\n\n[内部：好感度升至{self.memory.get_affection_tier()[1]}。请用稍暖的语气回应。]"
                 with self._history_lock:
                     self.history[0] = {"role": "system", "content": full_system}
+                log.debug(f"[Chat] 好感更新后重新注入记忆上下文，prompt 长度={len(full_system)}")
                 self.memory.mark_today_chatted()
                 self.memory.increment_message_counter()
                 self._extract_memories(message, reply)
@@ -756,6 +761,14 @@ class ChatEngine:
         self._cancelled = False
         with self._history_lock:
             self.history.append({"role": "user", "content": message})
+
+            # ========== 注入养成记忆上下文（语义检索） ==========
+            if self.memory:
+                ctx = self.memory.build_context_prompt(current_query=message)
+                full_system = SYSTEM_PROMPT + "\n\n" + ctx
+                self.history[0] = {"role": "system", "content": full_system}
+                log.debug(f"[Chat] 注入记忆上下文，prompt 长度={len(full_system)}，记忆内容={ctx}")
+
             if len(self.history) > 8:
                 saved_system = self.history[0]
                 self.history = [saved_system] + self.history[-6:]

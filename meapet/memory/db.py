@@ -12,6 +12,9 @@ import threading
 import hashlib
 from typing import Dict, List, Optional, Tuple, Any
 from datetime import datetime, timedelta
+from meapet.log import get_color_logger
+
+log = get_color_logger("memory")
 
 from meapet.paths import project_path
 
@@ -188,6 +191,7 @@ class MeaMemory:
         """)
 
         self.conn.commit()
+        log.debug("[DB] 数据表初始化完成")
 
     def _migrate_schema(self):
         """安全迁移：新增列或表结构变更"""
@@ -198,6 +202,7 @@ class MeaMemory:
 
         if current_version >= SCHEMA_VERSION:
             return
+        log.debug(f"[DB] 开始数据库迁移：{current_version} → {SCHEMA_VERSION}")
 
         # 迁移 1: 为旧 memories 表补充新列
         if current_version < 1:
@@ -226,10 +231,13 @@ class MeaMemory:
 
         # 为没有 embedding 的记忆计算 embedding
         c.execute("SELECT id, content, embedding FROM memories WHERE embedding IS NULL OR embedding = ''")
-        for row in c.fetchall():
+        rows = c.fetchall()
+        for row in rows:
             emb = _compute_embedding(row["content"])
             emb_json = json.dumps(emb, ensure_ascii=False)
             c.execute("UPDATE memories SET embedding = ? WHERE id = ?", (emb_json, row["id"]))
+        if rows:
+            log.debug(f"[DB] 迁移中补齐了 {len(rows)} 条记忆的 embedding")
 
         # 更新 schema version
         c.execute(
@@ -237,6 +245,7 @@ class MeaMemory:
             (SCHEMA_VERSION, time.time()),
         )
         self.conn.commit()
+        log.debug(f"[DB] 数据库迁移完成 → v{SCHEMA_VERSION}")
 
     def _ensure_defaults(self):
         """初始化默认状态"""
@@ -259,6 +268,7 @@ class MeaMemory:
                 (key, val),
             )
         self.conn.commit()
+        log.debug("[DB] 默认状态初始化完成")
 
     # ========================
     # 状态读写
@@ -278,6 +288,7 @@ class MeaMemory:
         c = self.conn.cursor()
         c.execute("INSERT OR REPLACE INTO mea_state (key, value) VALUES (?, ?)", (key, value))
         self.conn.commit()
+        log.debug(f"[DB] 写入状态 {key}={value}")
 
     def get_affection(self) -> int:
         return int(self._get_state("affection", "5"))
@@ -296,6 +307,7 @@ class MeaMemory:
         with self._lock:
             gained_today = int(self._get_state(gained_key, "0"))
             if gained_today >= AFFECTION_DAILY_CAP:
+                log.debug(f"[DB] 好感度已达每日上限，跳过")
                 return None
             actual = min(delta, AFFECTION_DAILY_CAP - gained_today)
             current = int(self._get_state("affection", "5"))
@@ -308,6 +320,7 @@ class MeaMemory:
             new_tier = self._get_tier_for(new)
             upgraded = new_tier[0] > old_tier
             upgrade_line = new_tier[2] if upgraded else None
+            log.debug(f"[DB] 好感度变更 {current}→{new}，今日已获得 {gained_today + actual}/{AFFECTION_DAILY_CAP}")
         if upgraded:
             self.add_event("milestone", f"好感度升级：{new_tier[1]}（{current}→{new}）")
             return upgrade_line
@@ -325,8 +338,10 @@ class MeaMemory:
 
     def set_mood(self, mood: str):
         with self._lock:
+            old = self._get_state("mood", "平静")
             self._set_state_unlocked("mood", mood)
             self._set_state_unlocked("mood_updated", str(time.time()))
+            log.debug(f"[DB] 心情变更 {old}→{mood}")
 
     def get_last_chat_time(self) -> float:
         return float(self._get_state("last_chat", "0"))
@@ -366,6 +381,7 @@ class MeaMemory:
         old_days = self.get_total_days()
         if days > old_days:
             self._set_state("total_days", str(days))
+        log.debug(f"[DB] 添加聊天记录 role={role} len={len(content)}")
 
     def get_recent_chats(self, limit: int = 20, exclude_summarized: bool = True) -> List[Dict]:
         with self._lock:
@@ -411,6 +427,7 @@ class MeaMemory:
                 (event_type, description, json.dumps(data or {}, ensure_ascii=False), time.time()),
             )
             self.conn.commit()
+        log.debug(f"[DB] 添加事件 {event_type}: {description}")
 
     def get_recent_events(self, limit: int = 10) -> List[Dict]:
         with self._lock:
@@ -456,6 +473,7 @@ class MeaMemory:
                 ),
             )
             self.conn.commit()
+            log.debug(f"[DB] 创建记忆 id={c.lastrowid} type={memory_type} imp={importance}")
             return c.lastrowid
 
     def get_memory(self, memory_id: int) -> Optional[Dict[str, Any]]:
@@ -464,8 +482,11 @@ class MeaMemory:
             c.execute("SELECT * FROM memories WHERE id = ?", (memory_id,))
             row = c.fetchone()
             if not row:
+                log.debug(f"[DB] 获取记忆 id={memory_id} → 未找到")
                 return None
-            return self._row_to_memory_dict(row)
+            d = self._row_to_memory_dict(row)
+            log.debug(f"[DB] 获取记忆 id={memory_id} → {d.get('memory_type', '?')} imp={d.get('importance')}")
+            return d
 
     def _row_to_memory_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
         d = dict(row)
@@ -500,14 +521,18 @@ class MeaMemory:
             c = self.conn.cursor()
             c.execute(f"UPDATE memories SET {set_clause} WHERE id = ?", values)
             self.conn.commit()
-            return c.rowcount > 0
+            ok = c.rowcount > 0
+            log.debug(f"[DB] 更新记忆 id={memory_id} → {'成功' if ok else '未找到'} fields={list(updates.keys())}")
+            return ok
 
     def delete_memory(self, memory_id: int) -> bool:
         with self._lock:
             c = self.conn.cursor()
             c.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
             self.conn.commit()
-            return c.rowcount > 0
+            ok = c.rowcount > 0
+            log.debug(f"[DB] 删除记忆 id={memory_id} → {'成功' if ok else '未找到'}")
+            return ok
 
     def list_memories(
         self,
@@ -541,6 +566,7 @@ class MeaMemory:
                 params + [page_size, offset],
             )
             rows = [self._row_to_memory_dict(r) for r in c.fetchall()]
+        log.debug(f"[DB] 列出记忆 page={page} size={page_size} total={total} 返回={len(rows)}条")
         return rows, total
 
     def get_memories_by_tag(self, tag: str) -> List[Dict[str, Any]]:
@@ -559,6 +585,7 @@ class MeaMemory:
             memory_type="fact",
             metadata={"source": source} if source else None,
         )
+        log.debug(f"[DB] add_memory（旧API）content='{content[:40]}' imp={importance}")
 
     def get_important_memories(self, limit: int = 10) -> List[str]:
         with self._lock:
@@ -567,7 +594,9 @@ class MeaMemory:
                 "SELECT content FROM memories ORDER BY importance DESC, last_recalled DESC LIMIT ?",
                 (limit,),
             )
-            return [r["content"] for r in c.fetchall()]
+            rows = [r["content"] for r in c.fetchall()]
+        log.debug(f"[DB] 获取重要记忆：返回 {len(rows)} 条")
+        return rows
 
     # ========================
     # 主人信息
@@ -580,6 +609,7 @@ class MeaMemory:
                 (key, value, time.time()),
             )
             self.conn.commit()
+        log.debug(f"[DB] 设置主人信息 {key}={value}")
 
     def get_master_info(self, key: str) -> Optional[str]:
         with self._lock:
@@ -640,15 +670,19 @@ class MeaMemory:
             scored.append((score, r))
 
         scored.sort(key=lambda x: x[0], reverse=True)
-        return [r for _, r in scored[:limit]]
+        result = [r for _, r in scored[:limit]]
+        log.debug(f"[DB] 语义检索 query='{query[:40]}' → {len(result)}条 (共{len(rows)}候选)")
+        return result
 
     # ========================
     # 生命周期管理
     # ========================
     def lifecycle_maintenance(self):
         now = time.time()
+        log.debug("[DB] 开始生命周期维护")
 
         # 1. 重要性衰减
+        decay_count = 0
         with self._lock:
             c = self.conn.cursor()
             c.execute("SELECT id, importance, memory_type, last_recalled, decay_factor FROM memories")
@@ -663,6 +697,9 @@ class MeaMemory:
                         if new_imp != row["importance"]:
                             c.execute("UPDATE memories SET importance = ?, updated = ? WHERE id = ?",
                                       (new_imp, now, row["id"]))
+                            decay_count += 1
+        if decay_count:
+            log.debug(f"[DB] 生命周期：{decay_count} 条记忆重要性衰减")
 
         # 2. 合并相似记忆
         with self._lock:
@@ -670,6 +707,7 @@ class MeaMemory:
             c.execute("SELECT id, content, embedding, importance, tags, metadata, access_count FROM memories ORDER BY importance DESC")
             all_mems = [dict(r) for r in c.fetchall()]
         merged_ids = set()
+        merge_count = 0
         for i in range(len(all_mems)):
             if all_mems[i]["id"] in merged_ids:
                 continue
@@ -690,6 +728,7 @@ class MeaMemory:
                     merged_meta = {**meta_j, **meta_i}
                     merged_access = (target.get("access_count") or 1) + (victim.get("access_count") or 1)
                     merged_imp = max(target["importance"], victim["importance"])
+                    merge_count += 1
                     with self._lock:
                         c = self.conn.cursor()
                         c.execute(
@@ -706,8 +745,11 @@ class MeaMemory:
                         c.execute("DELETE FROM memories WHERE id=?", (victim["id"],))
                         self.conn.commit()
                     merged_ids.add(victim["id"])
+        if merge_count:
+            log.debug(f"[DB] 生命周期：合并了 {merge_count} 组相似记忆")
 
         # 3. 清理过期低重要性记忆
+        prune_count = 0
         with self._lock:
             c = self.conn.cursor()
             c.execute(
@@ -719,7 +761,10 @@ class MeaMemory:
                 lr = row["last_recalled"] or 0
                 if (now - lr) / 86400 >= PRUNE_DAYS:
                     c.execute("DELETE FROM memories WHERE id = ?", (row["id"],))
+                    prune_count += 1
             self.conn.commit()
+        if prune_count:
+            log.debug(f"[DB] 生命周期：清理了 {prune_count} 条过期记忆")
 
     def _parse_emb(self, emb):
         if not emb:
@@ -759,13 +804,15 @@ class MeaMemory:
     def check_summarization_trigger(self) -> bool:
         """每 SUMMARIZE_EVERY_N 条消息触发一次"""
         count = int(self._get_state("messages_since_summary", "0"))
-        if count >= SUMMARIZE_EVERY_N:
-            return True
-        return False
+        triggered = count >= SUMMARIZE_EVERY_N
+        if triggered:
+            log.debug(f"[DB] 摘要触发器触发 count={count}")
+        return triggered
 
     def increment_message_counter(self):
         count = int(self._get_state("messages_since_summary", "0"))
         self._set_state("messages_since_summary", str(count + 1))
+        log.debug(f"[DB] 消息计数器 {count}→{count+1}")
 
     def reset_summarization_counter(self):
         self._set_state("messages_since_summary", "0")
@@ -780,6 +827,7 @@ class MeaMemory:
             )
             rows = c.fetchall()
         if len(rows) < 4:
+            log.debug(f"[DB] 准备摘要上下文：未摘要消息仅 {len(rows)} 条，跳过")
             return None, None
         rows.reverse()
         chats = []
@@ -787,11 +835,12 @@ class MeaMemory:
         for r in rows:
             chats.append({"role": r["role"], "content": r["content"]})
             ids.append(r["id"])
+        log.debug(f"[DB] 准备摘要上下文：{len(ids)} 条消息 id={ids}")
         return chats, ids
 
     def store_summary(self, summary_text: str, source_ids: List[int], importance: int = 3):
         """将 LLM 生成的摘要存为 memory"""
-        self.create_memory(
+        mem_id = self.create_memory(
             content=summary_text,
             importance=importance,
             memory_type="summary",
@@ -806,6 +855,7 @@ class MeaMemory:
                 c.execute("UPDATE chat_history SET summarized = 1 WHERE id = ?", (sid,))
             self.conn.commit()
         self.reset_summarization_counter()
+        log.debug(f"[DB] 存储摘要 memory_id={mem_id} source_ids={source_ids}")
 
     # ========================
     # JSON 导入导出
@@ -837,6 +887,7 @@ class MeaMemory:
         if filepath:
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+        log.debug(f"[DB] 导出 JSON：{len(data['memories'])} 条记忆，{len(data['events'])} 条事件")
         return data
 
     def import_from_json(self, source: Any, merge: bool = False) -> int:
@@ -891,6 +942,7 @@ class MeaMemory:
                 if key in preserved_keys:
                     self._set_state(key, str(value))
 
+        log.debug(f"[DB] 导入 JSON：{imported} 条（merge={merge}）")
         return imported
 
     # ========================
@@ -943,7 +995,9 @@ class MeaMemory:
                 else:
                     lines.append(f"你：{chat['content'][:80]}")
 
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        log.debug(f"[DB] 构建上下文提示词完成，共 {len(lines)} 行")
+        return result
 
     # ========================
     # 每日维护
@@ -960,20 +1014,24 @@ class MeaMemory:
             self._set_state(today_key, "0")
         # 运行生命周期维护
         self.lifecycle_maintenance()
+        log.debug("[DB] 每日维护完成")
 
     def mark_today_chatted(self):
         today = datetime.now().strftime("%Y-%m-%d")
         today_key = f"chatted_{today}"
         count = int(self._get_state(today_key, "0"))
         self._set_state(today_key, str(count + 1))
+        log.debug(f"[DB] 标记今日已聊天 count={count + 1}")
 
     def get_today_chat_count(self) -> int:
         today = datetime.now().strftime("%Y-%m-%d")
-        return int(self._get_state(f"chatted_{today}", "0"))
+        count = int(self._get_state(f"chatted_{today}", "0"))
+        return count
 
     def close(self):
         with self._lock:
             self.conn.close()
+        log.debug("[DB] 数据库连接已关闭")
 
     def reset_all(self):
         with self._lock:
@@ -984,3 +1042,4 @@ class MeaMemory:
             c.execute("DELETE FROM memories")
             self.conn.commit()
         self._ensure_defaults()
+        log.debug("[DB] 所有数据已重置")
