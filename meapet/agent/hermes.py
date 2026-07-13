@@ -20,7 +20,11 @@ from meapet.agent.base import (
     TurnCompleted,
     TurnFailed,
 )
-from meapet.conversation.output_protocol import MeaPetOutputStreamParser
+from meapet.conversation.output_protocol import (
+    MeaPetOutputStreamParser,
+    ProtocolCompleted,
+    SegmentCompleted,
+)
 
 
 _OUTPUT_INSTRUCTION = """你仍使用 Agent 已有的人设、记忆、模型和工具；以下内容只约束桌宠前端输出格式。
@@ -31,6 +35,16 @@ _OUTPUT_INSTRUCTION = """你仍使用 Agent 已有的人设、记忆、模型和
 </MEAPET_SEGMENT>
 全部分段后输出 <MEAPET_DONE />。
 display_text、voice_text、voice_language、mood、tts_style 都是必需字段；不要输出推理、工具参数或工具结果。"""
+
+_REPAIR_INSTRUCTION = """你是一个纯格式转换器。只转换用户提供的畸形回复，不回答或继续原任务，不调用任何工具，不补充事实。
+保留原回复的含义与语言，将其转换为一到多个下列分段，禁止 Markdown 代码围栏：
+<MEAPET_SEGMENT>
+<DISPLAY>给用户看的本段文字</DISPLAY>
+<META>{"voice_text":"本段朗读文本","voice_language":"BCP-47语言码","mood":"neutral","tts_style":""}</META>
+</MEAPET_SEGMENT>
+全部分段后输出 <MEAPET_DONE />。五个 META/DISPLAY 字段都必须存在。"""
+
+_MAX_REPAIR_INPUT_CHARS = 65536
 
 _CONTROL_RE = re.compile(r"[\r\n\x00]")
 _SAFE_STATUS_RE = re.compile(r"[\x00-\x1f\x7f<>]")
@@ -211,16 +225,21 @@ class HermesAdapter:
 
         return await get_client()
 
-    def _headers(self, *, turn_id: str = "") -> dict[str, str]:
+    def _headers(
+        self,
+        *,
+        turn_id: str = "",
+        include_session: bool = True,
+    ) -> dict[str, str]:
         self._validate_auth()
         headers = {
             "Authorization": f"Bearer {self.config.auth_token}",
             "Accept": "text/event-stream",
             "Content-Type": "application/json",
         }
-        if self.config.session_id:
+        if include_session and self.config.session_id:
             headers["X-Hermes-Session-Id"] = self.config.session_id
-        if self.config.session_key:
+        if include_session and self.config.session_key:
             headers["X-Hermes-Session-Key"] = self.config.session_key
         if turn_id:
             headers["Idempotency-Key"] = turn_id
@@ -295,6 +314,73 @@ class HermesAdapter:
             await self._owned_client.aclose()
         self._owned_client = None
 
+    async def _repair_result(
+        self,
+        *,
+        request: AgentTurnRequest,
+        malformed_output: str,
+        client: httpx.AsyncClient,
+    ):
+        """在隔离会话中做一次纯格式转换；任何异常都回退原解析结果。"""
+        repair_turn_id = f"{request.turn_id[:220]}-format-repair"
+        body = {
+            "model": self.config.model,
+            "messages": [
+                {"role": "system", "content": _REPAIR_INSTRUCTION},
+                {
+                    "role": "user",
+                    "content": malformed_output[:_MAX_REPAIR_INPUT_CHARS],
+                },
+            ],
+            "stream": True,
+            "tool_choice": "none",
+        }
+        parser = MeaPetOutputStreamParser()
+        try:
+            async with client.stream(
+                "POST",
+                self.config.endpoint("/v1/chat/completions"),
+                headers=self._headers(
+                    turn_id=repair_turn_id,
+                    include_session=False,
+                ),
+                json=body,
+                timeout=self.config.timeout_seconds,
+            ) as response:
+                if response.status_code >= 400:
+                    return None
+                if "text/event-stream" not in response.headers.get(
+                    "Content-Type", ""
+                ).lower():
+                    return None
+                async for sse in _iter_sse(response):
+                    if request.turn_id in self._cancelled_turns:
+                        return None
+                    if sse.data.strip() == "[DONE]":
+                        continue
+                    try:
+                        payload = json.loads(sse.data)
+                    except json.JSONDecodeError:
+                        return None
+                    if not isinstance(payload, dict):
+                        return None
+                    choices = payload.get("choices")
+                    if not isinstance(choices, list) or not choices:
+                        continue
+                    choice = choices[0] if isinstance(choices[0], dict) else {}
+                    delta = choice.get("delta")
+                    if not isinstance(delta, dict):
+                        continue
+                    content = delta.get("content")
+                    if isinstance(content, str) and content:
+                        parser.feed(content)
+            result = parser.close(tts_enabled=request.tts_enabled)
+        except (httpx.HTTPError, ValueError):
+            return None
+        if result.requires_repair(tts_enabled=request.tts_enabled):
+            return None
+        return result
+
     async def stream_turn(self, request: AgentTurnRequest) -> AsyncIterator[object]:
         if request.turn_id in self._cancelled_turns:
             self._cancelled_turns.discard(request.turn_id)
@@ -318,6 +404,9 @@ class HermesAdapter:
             "stream": True,
         }
         parser = MeaPetOutputStreamParser()
+        raw_chunks: list[str] = []
+        completed_indices: set[int] = set()
+        protocol_completed_emitted = False
 
         try:
             async with client.stream(
@@ -379,12 +468,37 @@ class HermesAdapter:
                     content = delta.get("content")
                     if not isinstance(content, str) or not content:
                         continue
+                    raw_chunks.append(content)
                     for event in parser.feed(content):
+                        if isinstance(event, SegmentCompleted):
+                            if event.segment.missing_required_fields:
+                                continue
+                            completed_indices.add(event.segment.index)
+                        elif isinstance(event, ProtocolCompleted):
+                            protocol_completed_emitted = True
                         yield event
 
             result = parser.close(tts_enabled=request.tts_enabled)
             if result.requires_repair(tts_enabled=request.tts_enabled):
                 yield FormatRepairRequired(result)
+                repaired = await self._repair_result(
+                    request=request,
+                    malformed_output="".join(raw_chunks),
+                    client=client,
+                )
+                if request.turn_id in self._cancelled_turns:
+                    self._cancelled_turns.discard(request.turn_id)
+                    yield TurnCancelled(request.turn_id)
+                    return
+                if repaired is not None:
+                    result = repaired
+
+            for segment in result.segments:
+                if segment.index not in completed_indices:
+                    yield SegmentCompleted(segment)
+                    completed_indices.add(segment.index)
+            if result.done and not protocol_completed_emitted:
+                yield ProtocolCompleted()
             yield TurnCompleted(request.turn_id, result)
         except asyncio.CancelledError:
             raise
