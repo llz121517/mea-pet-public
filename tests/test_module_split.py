@@ -1,6 +1,7 @@
 """拆分后的回归单测：模块可导入、worker、配置读写、向导入口"""
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -1097,6 +1098,32 @@ class TestRefactorRuntimeRegressions(unittest.TestCase):
 
         self.assertEqual(config["tts"]["gsv_ref_wav"], "./refs/custom.wav")
         self.assertEqual(config["tts"]["gsv_ref_lang"], "zh")
+
+    def test_wizard_tts_import_survives_stale_config_store_module(self):
+        """更新代码后，运行中的桌宠仍可能缓存旧版配置模块。"""
+        code = """
+import os
+import sys
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+import meapet.config.store as store
+
+del store.normalize_gsv_ref_language
+sys.modules.pop("wizard.page_tts", None)
+
+from wizard.page_tts import TTSPage
+print(TTSPage.__name__)
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("TTSPage", result.stdout)
 
     def test_redaction_masks_hyphenated_secrets(self):
         from meapet.utils import redact_text
