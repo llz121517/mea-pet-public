@@ -1476,6 +1476,35 @@ class UiRefactorTests(unittest.TestCase):
         page._sync_engine_details_visibility()
         self.assertFalse(page.backend_combo.isHidden())
 
+    def test_gsv_reference_audio_path_and_language_are_restored_and_saved(self) -> None:
+        from wizard.app import SetupWizard
+
+        wizard = self._track(SetupWizard())
+        wizard._load_timer.stop()
+        for timer in wizard.tts_page._startup_timers:
+            timer.stop()
+        wizard._existing_config = {}
+
+        wizard.tts_page.apply_config(
+            {
+                "engine": "gpt_sovits",
+                "enabled": True,
+                "gsv_ref_wav": "./refs/custom.wav",
+                "gsv_ref_lang": "zh",
+            }
+        )
+
+        path_input = wizard.tts_page.gsv_ref_wav_input
+        lang_combo = wizard.tts_page.gsv_ref_lang_combo
+        self.assertEqual(path_input.text(), "./refs/custom.wav")
+        self.assertEqual(lang_combo.currentData(), "zh")
+        self.assertTrue(path_input.accessibleName())
+        self.assertTrue(lang_combo.accessibleName())
+
+        tts_config = wizard.collect_config()["tts"]
+        self.assertEqual(tts_config["gsv_ref_wav"], "./refs/custom.wav")
+        self.assertEqual(tts_config["gsv_ref_lang"], "zh")
+
     def test_tray_menu_offers_standby_recovery(self) -> None:
         from meapet.desktop.window_chrome import PetWindowChromeMixin
         from meapet.desktop import status_language
