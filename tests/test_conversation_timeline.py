@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -105,6 +106,89 @@ class TestConversationTimeline(unittest.TestCase):
         self.assertEqual(turn.status, "error")
         self.assertEqual(turn.segments, ())
         self.assertEqual(turn.error_text, "连接失败")
+
+    def test_terminal_turns_roundtrip_through_sqlite_and_restore_history(self):
+        from meapet.conversation.timeline import (
+            ConversationKey,
+            ConversationTimeline,
+        )
+        from meapet.memory import db as memory_db
+
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        old_path = memory_db.DB_PATH
+        memory_db.DB_PATH = path
+        memory = None
+        try:
+            memory = memory_db.MeaMemory()
+            key = ConversationKey("agent", "hermes", "persisted-session")
+            timeline = ConversationTimeline(
+                max_turns=2,
+                terminal_callback=lambda turn: memory.save_conversation_turn(
+                    turn,
+                    max_turns=2,
+                ),
+            )
+            for number in range(3):
+                turn_id = f"persisted-{number}"
+                timeline.start_turn(
+                    key,
+                    turn_id,
+                    source="user_reply",
+                    user_text=f"问题 {number}",
+                )
+                timeline.complete_segment(
+                    key,
+                    turn_id,
+                    _segment(0, f"回答 {number}"),
+                )
+                timeline.finish_turn(key, turn_id)
+
+            restored = ConversationTimeline(max_turns=2)
+            for turn in memory.load_conversation_turns():
+                restored.restore(turn)
+
+            self.assertEqual(
+                [turn.turn_id for turn in restored.recent(key)],
+                ["persisted-1", "persisted-2"],
+            )
+            self.assertEqual(
+                restored.history(key, max_turns=2),
+                (
+                    {"role": "user", "content": "问题 1"},
+                    {"role": "assistant", "content": "回答 1"},
+                    {"role": "user", "content": "问题 2"},
+                    {"role": "assistant", "content": "回答 2"},
+                ),
+            )
+        finally:
+            if memory is not None:
+                memory.close()
+            memory_db.DB_PATH = old_path
+            for suffix in ("", "-wal", "-shm"):
+                try:
+                    os.unlink(path + suffix)
+                except OSError:
+                    pass
+
+
+class TestConversationOrchestrator(unittest.TestCase):
+    def test_switching_conversation_invalidates_old_generation(self):
+        from meapet.conversation.orchestrator import ConversationOrchestrator
+        from meapet.conversation.timeline import ConversationKey
+
+        first = ConversationKey("agent", "hermes", "session-a")
+        second = ConversationKey("agent", "hermes", "session-b")
+        orchestrator = ConversationOrchestrator(first)
+        old_turn = orchestrator.begin_turn("turn-a")
+
+        generation = orchestrator.activate(second)
+        new_turn = orchestrator.begin_turn("turn-b")
+
+        self.assertGreater(generation, old_turn.generation_id)
+        self.assertFalse(orchestrator.accepts(old_turn))
+        self.assertTrue(orchestrator.accepts(new_turn))
+        self.assertEqual(new_turn.conversation_key, second)
 
 
 class TestTimelineViewer(unittest.TestCase):

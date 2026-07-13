@@ -272,6 +272,50 @@ class TestAgentChatWorkerSelection(unittest.TestCase):
             "熟悉",
         )
         self.assertEqual(request.turn_id, host._active_agent_turn_id)
+        self.assertEqual(request.conversation_key.mode, "agent")
+        self.assertGreater(request.generation_id, 0)
+
+    def test_stale_worker_events_are_discarded_after_session_switch(self):
+        from meapet.conversation.orchestrator import ConversationOrchestrator
+        from meapet.conversation.output_protocol import SegmentTextDelta
+        from meapet.conversation.timeline import ConversationKey
+        from meapet.desktop.chat_flow import PetChatFlowMixin
+
+        old_key = ConversationKey("agent", "hermes", "session-old")
+        new_key = ConversationKey("agent", "hermes", "session-new")
+
+        class Host(PetChatFlowMixin):
+            config = {
+                "llm": {"mode": "agent", "agent": {"history_turns": 5}},
+                "bubble_duration_ms": {"reply": 3000},
+            }
+
+            def __init__(self):
+                self._conversation_orchestrator = ConversationOrchestrator(old_key)
+                self._conversation_key = old_key
+                self._bubble_stack = _Stack()
+                self._agent_history = []
+                self._agent_tts_workers = {}
+                self._chat_poll = _Timer()
+                self._chat_timeout = _Timer()
+                self._awaiting_reply = False
+
+            def _position_bubble(self):
+                raise AssertionError("迟到事件不能触碰当前 UI")
+
+        host = Host()
+        old_context = host._conversation_orchestrator.begin_turn("old-turn")
+        worker = _Worker((SegmentTextDelta(0, "迟到回复"),))
+        worker.turn_context = old_context
+        host._chat_worker = worker
+        host._conversation_key = new_key
+        host._conversation_orchestrator.activate(new_key)
+
+        host._poll_chat()
+
+        self.assertEqual(host._bubble_stack.begun, [])
+        self.assertEqual(host._agent_history, [])
+        self.assertTrue(worker.deleted)
 
 
 class TestAgentChatPolling(unittest.TestCase):
