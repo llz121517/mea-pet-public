@@ -169,13 +169,13 @@ class MeaPet(
         try:
             self._place_bottom_right()
         except Exception as e:
-            log.warn(f"[init] 窗口定位失败: {e}")
+            log.warning(f"[init] 窗口定位失败: {e}")
         self.show()
         self.raise_()
         try:
             self._apply_hit_region()
         except Exception as e:
-            log.warn(f"[init] 碰撞区域设置失败: {e}")
+            log.warning(f"[init] 碰撞区域设置失败: {e}")
 
         try:
             cache_dir = str(PROJECT_ROOT / "audio_cache")
@@ -185,7 +185,7 @@ class MeaPet(
                     f"[audio_cache] 缓存清理完成: removed={stats['removed']} kept={stats['kept']}"
                 )
         except Exception as e:
-            log.warn(f"[audio_cache] 缓存清理跳过: {e}")
+            log.warning(f"[audio_cache] 缓存清理跳过: {e}")
 
         if self._config_broken:
             QTimer.singleShot(800, lambda: self._show_bubble("配置文件坏了喵", 5000))
@@ -590,7 +590,7 @@ def main():
         splash.show()
         app.processEvents()
     except Exception as e:
-        log.warn(f"[boot] 启动页跳过: {e}")
+        log.warning(f"[boot] 启动页跳过: {e}")
         splash = None
 
     pet = None
@@ -639,7 +639,7 @@ def main():
                 f"@({pet2.x()},{pet2.y()}) vis={pet2.isVisible()}"
             )
         except Exception as e:
-            log.warn(f"[boot] 确保窗口可见失败: {e}")
+            log.warning(f"[boot] 确保窗口可见失败: {e}")
 
     def _greet():
         try:
@@ -647,7 +647,7 @@ def main():
             if pet2 is not None and hasattr(pet2, "show_reply"):
                 pet2.show_reply("......", "neutral")
         except Exception as e:
-            log.warn(f"[boot] 问候消息跳过: {e}")
+            log.warning(f"[boot] 问候消息跳过: {e}")
 
     startup_finished = {"done": False}
 

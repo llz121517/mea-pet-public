@@ -1157,7 +1157,7 @@ class PetChatFlowMixin:
                 # 用 terminate() 强制终止
                 self._chat_worker.terminate()
                 if not self._chat_worker.wait(2000):
-                    log.warn("[chat] ChatWorker 无法终止")
+                    log.warning("[chat] ChatWorker 无法终止")
             self._chat_worker.deleteLater()
             self._chat_worker = None
         self._complete_turn_context(context)

@@ -83,7 +83,7 @@ class TtsGsvMixin:
 
             log.info(f"子进程返回 (rc={proc.returncode}, {elapsed:.1f}s)")
             if stderr_text.strip():
-                log.warn(f"stderr chars={len(stderr_text.strip())}")
+                log.warning(f"stderr chars={len(stderr_text.strip())}")
                 if debug_enabled():
                     log.debug(f"stderr [debug]: {stderr_text.strip()[-200:]}")
 
@@ -96,7 +96,7 @@ class TtsGsvMixin:
             # 取最后一行非空 JSON
             lines = [l.strip() for l in stdout_text.split('\n') if l.strip()]
             if not lines:
-                log.warn("TTS: 子进程无输出")
+                log.warning("TTS: 子进程无输出")
                 return None, ""
             last_line = lines[-1]
             result = json.loads(last_line)
@@ -108,7 +108,7 @@ class TtsGsvMixin:
                     log.debug(f"TTS subprocess error [debug]: {err}")
                 if result.get("captured"):
                     captured = str(result["captured"])
-                    log.warn(f"captured chars={len(captured)}")
+                    log.warning(f"captured chars={len(captured)}")
                     if debug_enabled():
                         log.debug(f"captured [debug]: {captured[:300]}")
                 return None, ""
@@ -245,7 +245,7 @@ class TtsGsvMixin:
                 fallback_label = "中文"
             alt_wav, alt_txt = _scan(fallback)
             if alt_wav and alt_txt:
-                log.warn(
+                log.warning(
                     f"无 {prefixes[0]}* 参考，回退 {os.path.basename(alt_wav)}"
                 )
                 wav_file, txt_file = alt_wav, alt_txt
@@ -253,9 +253,9 @@ class TtsGsvMixin:
 
         if not wav_file or not txt_file:
             if not os.path.isdir(ref_folder):
-                log.warn(f"Ref folder not found: {ref_folder}")
+                log.warning(f"Ref folder not found: {ref_folder}")
             else:
-                log.warn(f"No ref audio for mood={mood} type={ref_type}")
+                log.warning(f"No ref audio for mood={mood} type={ref_type}")
             return None, None, None
 
         with open(txt_file, "r", encoding="utf-8") as f:

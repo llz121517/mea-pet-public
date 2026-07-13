@@ -551,7 +551,7 @@ class ScreenWatcher(QThread):
                 )
                 return text
             body = (resp.text or "").replace("\n", " ").strip()
-            log.warn(
+            log.warning(
                 f"[mimo_chat] HTTP {resp.status_code} "
                 f"model={self.mimo_model} body_len={len(body)}"
             )

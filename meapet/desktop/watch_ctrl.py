@@ -252,7 +252,7 @@ class PetWatcherMixin:
     def _on_watch_tts_and_show(self, raw: str, reply: str = None, mood: str = None):
         log.info(f"[watch] _on_watch_tts_and_show called, raw={raw is not None}, reply={reply is not None}")
         if raw is None or reply is None:
-            log.warn("[TTS] watch tts returned None, skip audio")
+            log.warning("[TTS] watch tts returned None, skip audio")
             if reply and mood:
                 self.show_reply(reply, mood, duration_ms=self.config["bubble_duration_ms"]["watch"])
 

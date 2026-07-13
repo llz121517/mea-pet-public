@@ -32,13 +32,13 @@ class TtsVitsMixin:
             log.info(f"VITS 返回 (rc={proc.returncode}, {elapsed:.1f}s)")
 
             if proc.returncode != 0:
-                log.warn(f"VITS failed: rc={proc.returncode} stderr_chars={len(proc.stderr or '')}")
+                log.warning(f"VITS failed: rc={proc.returncode} stderr_chars={len(proc.stderr or '')}")
                 if debug_enabled():
                     log.debug(f"VITS stderr [debug]: {(proc.stderr or '')[-200:]}")
                 return None, ""
 
             if not os.path.exists(output_wav):
-                log.warn("VITS: 输出文件不存在")
+                log.warning("VITS: 输出文件不存在")
                 return None, ""
 
             log.info(f"VITS output: {os.path.basename(output_wav)} ({elapsed:.1f}s)")

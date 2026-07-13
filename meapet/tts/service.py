@@ -84,11 +84,11 @@ class MeaTTS(TtsMimoMixin, TtsGsvMixin, TtsVitsMixin):
                     break
             if not self.python_exe:
                 self.python_exe = sys.executable
-                log.warn(f"未找到 GPT-SoVITS，降级至当前解释器: {self.python_exe}")
+                log.warning(f"未找到 GPT-SoVITS，降级至当前解释器: {self.python_exe}")
 
         # 验证 python_exe 是否存在
         if not os.path.isfile(self.python_exe):
-            log.warn(f"python_exe 不存在: {self.python_exe}")
+            log.warning(f"python_exe 不存在: {self.python_exe}")
             self.python_exe = sys.executable
 
         # 推理脚本路径
@@ -333,7 +333,7 @@ class MeaTTS(TtsMimoMixin, TtsGsvMixin, TtsVitsMixin):
                 ("SoVITS", self.sovits_path),
             ):
                 if is_git_lfs_pointer(path):
-                    log.warn(
+                    log.warning(
                         f"{label} 模型仍是 Git LFS pointer；"
                         "请手动准备真实模型文件（程序不会自动拉取）"
                     )
@@ -348,9 +348,9 @@ class MeaTTS(TtsMimoMixin, TtsGsvMixin, TtsVitsMixin):
                 self._deps_ready = True
             else:
                 if allow:
-                    log.warn("GSV 依赖安装不完全，TTS 可能失败")
+                    log.warning("GSV 依赖安装不完全，TTS 可能失败")
                 else:
-                    log.warn("GSV 依赖未齐（默认不自动下载）")
+                    log.warning("GSV 依赖未齐（默认不自动下载）")
 
         return bool(all_ok and self._deps_ready)
 
@@ -368,7 +368,7 @@ class MeaTTS(TtsMimoMixin, TtsGsvMixin, TtsVitsMixin):
             ok = bool(self.mimo_api_key and self.mimo_api_base)
             self._deps_ready = ok
             if not ok:
-                log.warn("MiMo TTS: 缺少 api_key 或 api_base")
+                log.warning("MiMo TTS: 缺少 api_key 或 api_base")
             return ok
         if self._vits_mode:
             return self.health_check()
@@ -378,7 +378,7 @@ class MeaTTS(TtsMimoMixin, TtsGsvMixin, TtsVitsMixin):
             if auto_install_gsv_deps(self.python_exe, allow_download=allow):
                 self._deps_ready = True
                 return True
-            log.warn("GSV 依赖未就绪")
+            log.warning("GSV 依赖未就绪")
         return False
 
     # 日语后处理：替换不常见/粗俗词为 GPT-SoVITS 模型更友好的表达
@@ -701,7 +701,7 @@ class MeaTTS(TtsMimoMixin, TtsGsvMixin, TtsVitsMixin):
 
         # 确保依赖就绪
         if not self._ensure_deps():
-            log.warn("TTS: 依赖未就绪，跳过合成")
+            log.warning("TTS: 依赖未就绪，跳过合成")
             return None, ""
 
         # 去除表情标记、动作括号、对话标记
@@ -717,7 +717,7 @@ class MeaTTS(TtsMimoMixin, TtsGsvMixin, TtsVitsMixin):
             return None, ""
         # 检查文本是否包含任何可发音内容（字母、数字、汉字等）
         if not any(unicodedata.category(c).startswith(('L', 'N')) for c in clean):
-            log.warn(f"TTS: 跳过无实际内容的文本 chars={len(clean)}")
+            log.warning(f"TTS: 跳过无实际内容的文本 chars={len(clean)}")
             if debug_enabled():
                 log.debug(f"TTS: 跳过文本 [debug]: {clean[:40]}")
             return None, ""
@@ -761,7 +761,7 @@ class MeaTTS(TtsMimoMixin, TtsGsvMixin, TtsVitsMixin):
             voice_language=synthesis_language,
         )
         if not ref_wav and not self._vits_mode:
-            log.warn(f"TTS: no ref for mood={mood}")
+            log.warning(f"TTS: no ref for mood={mood}")
             return None, ""
 
         text_lang = self._gsv_language_label(synthesis_language)
@@ -876,7 +876,7 @@ class MeaTTS(TtsMimoMixin, TtsGsvMixin, TtsVitsMixin):
                 if debug_enabled():
                     log.debug(f"[prerender] output [debug]: {cache_path}")
             else:
-                log.warn(f"[prerender] failed chars={len(text)}")
+                log.warning(f"[prerender] failed chars={len(text)}")
         return results
 
     def get_cached(self, text: str, cache_dir: str = None) -> Optional[str]:

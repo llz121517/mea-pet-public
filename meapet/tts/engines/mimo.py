@@ -76,7 +76,7 @@ class TtsMimoMixin:
                 voice_language=voice_language or lang_tag,
             )
             if not ref:
-                log.warn(
+                log.warning(
                     "voice-clone 未找到参考音频。"
                     "请把 wav/mp3 放到 voice_cache/，或在 config 设 tts.clone_ref"
                 )
@@ -112,7 +112,7 @@ class TtsMimoMixin:
 
         elapsed = time.time() - t1
         if resp.status_code != 200:
-            log.warn(
+            log.warning(
                 f"MiMo TTS HTTP {resp.status_code} ({elapsed:.1f}s) "
                 f"body_len={len(resp.text or '')}"
             )
@@ -131,7 +131,7 @@ class TtsMimoMixin:
         if not b64:
             b64 = (data.get("audio") or {}).get("data") or ""
         if not b64:
-            log.warn(
+            log.warning(
                 f"MiMo TTS 响应无 audio.data keys={list(message.keys())}"
             )
             return None, ""
@@ -147,7 +147,7 @@ class TtsMimoMixin:
             log.error(f"MiMo TTS 写文件失败: {e}")
             return None, ""
         if not os.path.exists(output_wav) or os.path.getsize(output_wav) < 44:
-            log.warn("MiMo TTS 输出文件异常")
+            log.warning("MiMo TTS 输出文件异常")
             return None, ""
         log.info(
             f"✓ MiMo TTS output: {os.path.basename(output_wav)} "
@@ -234,14 +234,14 @@ class TtsMimoMixin:
         if mapped_path:
             if os.path.isfile(mapped_path):
                 return mapped_path
-            log.warn(
+            log.warning(
                 f"固定参考音频不存在，继续查找同语言样本: {os.path.basename(mapped_path)}"
             )
 
         if self.mimo_clone_ref and os.path.isfile(self.mimo_clone_ref):
             ref_lang = self._detect_lang_from_path(self.mimo_clone_ref)
             if ref_lang and ref_lang != want:
-                log.warn(
+                log.warning(
                     f"clone_ref 语言={ref_lang} 与 voice_lang={want} 不一致，"
                     f"已拒绝跨语言参考: {os.path.basename(self.mimo_clone_ref)}"
                 )
@@ -318,7 +318,7 @@ class TtsMimoMixin:
         candidates.sort(key=lambda x: x[0], reverse=True)
         best = candidates[0]
         if best[2] not in ("?", want):
-            log.warn(
+            log.warning(
                 f"未找到 voice_lang={want} 的 clone 样本，"
                 "跳过语音，不使用其他语言样本"
             )
@@ -340,7 +340,7 @@ class TtsMimoMixin:
         ext = os.path.splitext(ref_path)[1].lower()
         mime = _MIMO_CLONE_MIME_BY_EXTENSION.get(ext)
         if not mime:
-            log.warn(
+            log.warning(
                 "clone 参考音频格式不支持；MiMo VoiceClone 仅支持 WAV/MP3"
             )
             return None
@@ -370,7 +370,7 @@ class TtsMimoMixin:
         encoded_size = 4 * ((raw_size + 2) // 3)
         uri_size = len(uri_prefix) + encoded_size
         if uri_size > _MIMO_MAX_CLONE_VOICE_URI_BYTES:
-            log.warn(
+            log.warning(
                 f"clone 参考音频编码后过大 ({uri_size} bytes)，"
                 f"上限为 {_MIMO_MAX_CLONE_VOICE_URI_BYTES} bytes"
             )
@@ -387,7 +387,7 @@ class TtsMimoMixin:
         uri = f"{uri_prefix}{b64}"
         # 文件可能在 stat 与读取之间变化，因此对最终请求值再次校验。
         if len(uri) > _MIMO_MAX_CLONE_VOICE_URI_BYTES:
-            log.warn(
+            log.warning(
                 f"clone 参考音频编码后过大 ({len(uri)} bytes)，"
                 f"上限为 {_MIMO_MAX_CLONE_VOICE_URI_BYTES} bytes"
             )
