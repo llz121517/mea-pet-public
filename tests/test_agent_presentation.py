@@ -43,6 +43,46 @@ def _completed_turn(*segments):
 
 
 class TestAgentPresentationWithoutTts(unittest.TestCase):
+    def test_unsupported_reply_mood_is_normalized_before_bubble_and_tts(self):
+        from meapet.agent.presentation import (
+            AgentTurnPresentation,
+            FinalizeBubble,
+            SubmitTTS,
+        )
+        from meapet.conversation.output_protocol import SegmentCompleted
+        from meapet.conversation.types import ReplySegment
+
+        unsupported = ReplySegment(
+            index=0,
+            display_text="测试",
+            voice_text="测试",
+            voice_language="zh",
+            mood="nonexistent-renderer-mood",
+            tts_style="",
+        )
+        silent = AgentTurnPresentation(
+            tts_enabled=False,
+            supported_moods=("neutral", "happy"),
+        )
+        spoken = AgentTurnPresentation(
+            tts_enabled=True,
+            supported_moods=("neutral", "happy"),
+        )
+
+        finalized = next(
+            action
+            for action in silent.consume(SegmentCompleted(unsupported))
+            if isinstance(action, FinalizeBubble)
+        )
+        submitted = next(
+            action
+            for action in spoken.consume(SegmentCompleted(unsupported))
+            if isinstance(action, SubmitTTS)
+        )
+
+        self.assertEqual(finalized.segment.mood, "neutral")
+        self.assertEqual(submitted.segment.mood, "neutral")
+
     def test_streaming_updates_one_bubble_and_finishes_after_turn(self):
         from meapet.agent.presentation import (
             AgentTurnPresentation,

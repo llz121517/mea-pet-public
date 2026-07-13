@@ -220,6 +220,9 @@ class TestTimelineViewer(unittest.TestCase):
             self.assertIn(f"完整段落 {index}", rendered)
         dialog._copy_all()
         self.assertEqual(QApplication.clipboard().text(), rendered)
+        self.assertIn("Agent", dialog.meta.text())
+        self.assertIn("hermes", dialog.meta.text())
+        self.assertIn("session-a", dialog.meta.text())
 
     def test_dialogue_bubble_emits_activation_for_full_turn_view(self):
         from PyQt5.QtCore import QEvent, QPointF, Qt
@@ -300,6 +303,52 @@ class TestAgentSessionReset(unittest.TestCase):
         self.assertEqual(host.memory.reset_calls, 0)
         self.assertEqual(host.saved, 1)
         self.assertIn("不会删除", question.call_args.args[2])
+
+    def test_direct_reset_also_clears_the_in_memory_timeline(self):
+        from PyQt5.QtWidgets import QMessageBox
+        from meapet.conversation.timeline import ConversationKey, ConversationTimeline
+        from meapet.desktop.window_chrome import PetWindowChromeMixin
+
+        key = ConversationKey("direct", "ollama", "local")
+
+        class Memory:
+            def __init__(self):
+                self.reset_calls = 0
+
+            def reset_all(self):
+                self.reset_calls += 1
+
+        class Host(PetWindowChromeMixin):
+            config = {"llm": {"mode": "direct"}}
+
+            def __init__(self):
+                self.memory = Memory()
+                self._conversation_timeline = ConversationTimeline()
+                self._conversation_timeline.start_turn(
+                    key,
+                    "old-turn",
+                    source="user_reply",
+                    user_text="旧问题",
+                )
+                self._conversation_timeline.complete_segment(
+                    key,
+                    "old-turn",
+                    _segment(0, "旧回答"),
+                )
+                self._conversation_timeline.finish_turn(key, "old-turn")
+
+            def _show_bubble(self, *_args, **_kwargs):
+                pass
+
+        host = Host()
+        with mock.patch(
+            "meapet.desktop.window_chrome.QMessageBox.question",
+            return_value=QMessageBox.Yes,
+        ):
+            host._reset_memory()
+
+        self.assertEqual(host.memory.reset_calls, 1)
+        self.assertEqual(host._conversation_timeline.all_recent(), ())
 
 
 if __name__ == "__main__":
