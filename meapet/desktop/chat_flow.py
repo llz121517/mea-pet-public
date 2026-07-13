@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import threading
 
 from PyQt5.QtCore import QTimer
 
@@ -14,6 +15,9 @@ from meapet.desktop.chat_input import ChatInputBox, set_awaiting_reply_state
 from meapet.log import get_color_logger
 
 log = get_color_logger("chat_flow")
+
+# 串行队列：确保记忆操作（摘要、提取等）不会并发执行
+_memory_op_lock = threading.Lock()
 
 
 def _log_private_text(label: str, text: str, *, suffix: str = "") -> None:
@@ -82,6 +86,7 @@ class PetChatFlowMixin:
             status_language.thinking_busy(),
         )
         self._safe_set_mood("talking")
+        self._last_user_msg = message
         _log_private_text("[chat] 发送给 LLM", message)
 
         # 显示思考中提示
@@ -140,45 +145,40 @@ class PetChatFlowMixin:
             if hasattr(self, '_chat_timeout') and self._chat_timeout:
                 self._chat_timeout.stop()
 
-    def _do_memory_ops(self, reply: str, mood: str):
-        """记忆操作放后台线程执行，不阻塞主线程"""
-        import threading
-        t = threading.Thread(target=self._do_memory_ops_sync, args=(reply, mood), daemon=True)
+    def _do_memory_ops(self, reply: str, mood: str, user_msg: str = ""):
+        """记忆操作放后台线程执行，不阻塞主线程。通过串行锁避免竞态。"""
+        t = threading.Thread(target=self._do_memory_ops_sync, args=(reply, mood, user_msg), daemon=True)
         t.start()
 
-    def _do_memory_ops_sync(self, reply: str, mood: str):
-        try:
-            engine = self.chat_engine
-            if not engine or not engine.memory:
-                return
-            user_msg = ""
-            for m in reversed(engine.history):
-                if m.get("role") == "user":
-                    user_msg = m["content"]
-                    break
-            if not user_msg:
-                return
-            engine.history[0] = {"role": "system", "content": SYSTEM_PROMPT}
-            engine.memory.add_chat("user", user_msg)
-            engine.memory.add_chat("mea", reply, mood)
-            n = len(user_msg or "")
-            if n < 10:
-                delta = 1
-            elif n < 50:
-                delta = 2
-            else:
-                delta = 3
-            upgrade_msg = engine.memory.add_affection(delta)
-            full_system = SYSTEM_PROMPT + "\n\n" + engine.memory.build_context_prompt(current_query=user_msg)
-            if upgrade_msg:
-                full_system += f"\n\n[内部：好感度升至{engine.memory.get_affection_tier()[1]}。请用稍暖的语气回应。]"
-            engine.history[0] = {"role": "system", "content": full_system}
-            engine.memory.mark_today_chatted()
-            engine.memory.increment_message_counter()
-            engine._extract_memories(user_msg, reply)
-            engine._summarize_if_needed()
-        except Exception as e:
-            log.error(f"[memory] 操作失败: {e}")
+    def _do_memory_ops_sync(self, reply: str, mood: str, user_msg: str):
+        if not user_msg:
+            return
+        with _memory_op_lock:
+            try:
+                engine = self.chat_engine
+                if not engine or not engine.memory:
+                    return
+                engine.history[0] = {"role": "system", "content": SYSTEM_PROMPT}
+                engine.memory.add_chat("user", user_msg)
+                engine.memory.add_chat("mea", reply, mood)
+                n = len(user_msg or "")
+                if n < 10:
+                    delta = 1
+                elif n < 50:
+                    delta = 2
+                else:
+                    delta = 3
+                upgrade_msg = engine.memory.add_affection(delta)
+                full_system = SYSTEM_PROMPT + "\n\n" + engine.memory.build_context_prompt(current_query=user_msg)
+                if upgrade_msg:
+                    full_system += f"\n\n[内部：好感度升至{engine.memory.get_affection_tier()[1]}。请用稍暖的语气回应。]"
+                engine.history[0] = {"role": "system", "content": full_system}
+                engine.memory.mark_today_chatted()
+                engine.memory.increment_message_counter()
+                engine._extract_memories(user_msg, reply)
+                engine._summarize_if_needed()
+            except Exception as e:
+                log.error(f"[memory] 操作失败: {e}")
 
     def _on_chat_done(self, reply: str, mood: str):
         _log_private_text("[reply] LLM 回复", reply, suffix=f"mood={mood}")
@@ -204,9 +204,12 @@ class PetChatFlowMixin:
                 tts_style = (eng.take_tts_style() or "").strip()
         except Exception as e:
             log.error(f"[tts] 取 TTS 风格失败: {e}")
-
-        # 记忆系统操作与 TTS 并行，不阻塞最终气泡。
-        QTimer.singleShot(0, lambda: self._do_memory_ops(reply, detected))
+        # 捕获本轮用户消息，记忆操作与 TTS 并行且由上游串行锁保护。
+        user_msg = getattr(self, '_last_user_msg', '') or ''
+        QTimer.singleShot(
+            0,
+            lambda: self._do_memory_ops(reply, detected, user_msg),
+        )
 
         # 最终回复必须等音频文件真正生成后再显示；否则文字和声音会明显错位。
         # TTS 关闭或启动失败时仍立即显示文字，不能让回复永久卡住。
