@@ -117,7 +117,19 @@ class BackendPage(QFrame):
         history_row.addStretch()
         agent_layout.addLayout(history_row)
 
-        self.agent_tls_verify = QCheckBox("校验 Agent HTTPS 证书")
+        self.agent_allow_insecure_ws = QCheckBox("明确允许远程明文 WS")
+        self.agent_allow_insecure_ws.setAccessibleDescription(
+            "仅用于可信内网；公网或跨网访问应使用 WSS"
+        )
+        agent_layout.addWidget(self.agent_allow_insecure_ws)
+        self.insecure_ws_warning = QLabel(
+            "警告：远程 WS 会让对话和 token 在网络中以明文传输。"
+        )
+        self.insecure_ws_warning.setProperty("status", "warning")
+        self.insecure_ws_warning.setWordWrap(True)
+        agent_layout.addWidget(self.insecure_ws_warning)
+
+        self.agent_tls_verify = QCheckBox("校验 Agent HTTPS / WSS 证书")
         self.agent_tls_verify.setChecked(True)
         agent_layout.addWidget(self.agent_tls_verify)
         self.agent_ca_file = QLineEdit()
@@ -211,7 +223,9 @@ class BackendPage(QFrame):
         self.agent_radio.toggled.connect(self._sync_visibility)
         self.control_enabled.toggled.connect(self._sync_visibility)
         self.control_allow_http.toggled.connect(self._sync_visibility)
+        self.agent_allow_insecure_ws.toggled.connect(self._sync_visibility)
         self.agent_kind.currentIndexChanged.connect(self._on_agent_kind_changed)
+        self._agent_identity_path = ""
         self._sync_visibility()
 
     def mode(self) -> str:
@@ -230,10 +244,18 @@ class BackendPage(QFrame):
         }
         if not current or current in defaults.values():
             self.agent_base_url.setText(defaults[kind])
+        self._sync_visibility()
 
     def _sync_visibility(self, *_args) -> None:
         agent_mode = self.agent_radio.isChecked()
+        openclaw_mode = (self.agent_kind.currentData() or "hermes") == "openclaw"
         self.agent_frame.setVisible(agent_mode)
+        self.agent_allow_insecure_ws.setVisible(agent_mode and openclaw_mode)
+        self.insecure_ws_warning.setVisible(
+            agent_mode
+            and openclaw_mode
+            and self.agent_allow_insecure_ws.isChecked()
+        )
         self.control_frame.setVisible(
             agent_mode and self.control_enabled.isChecked()
         )
@@ -258,6 +280,10 @@ class BackendPage(QFrame):
             self.agent_history_turns.setValue(int(agent.get("history_turns", 5)))
         except (TypeError, ValueError):
             self.agent_history_turns.setValue(5)
+        self.agent_allow_insecure_ws.setChecked(
+            bool(agent.get("allow_insecure_ws", False))
+        )
+        self._agent_identity_path = str(agent.get("identity_path") or "")
         tls = agent.get("tls") if isinstance(agent.get("tls"), dict) else {}
         self.agent_tls_verify.setChecked(bool(tls.get("verify", True)))
         self.agent_ca_file.setText(str(tls.get("ca_file") or ""))
@@ -291,6 +317,8 @@ class BackendPage(QFrame):
             "session_id": self.agent_session_id.text().strip(),
             "session_key": self.agent_session_key.text().strip(),
             "history_turns": self.agent_history_turns.value(),
+            "allow_insecure_ws": self.agent_allow_insecure_ws.isChecked(),
+            "identity_path": self._agent_identity_path,
             "tls": {
                 "verify": self.agent_tls_verify.isChecked(),
                 "ca_file": self.agent_ca_file.text().strip(),
