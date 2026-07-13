@@ -392,7 +392,7 @@ class ChatEngine:
                 ctx = self.memory.build_context_prompt(current_query=message)
                 full_system = SYSTEM_PROMPT + "\n\n" + ctx
                 self.history[0] = {"role": "system", "content": full_system}
-                log.debug(f"[Chat] 注入记忆上下文，prompt 长度={len(full_system)}，记忆内容={ctx}")
+                log.debug(f"[Chat] 注入记忆上下文，prompt 长度={len(full_system)}")
 
             # 保持历史不超 8 条（减少上下文长度，加速推理）
             if len(self.history) > 8:
@@ -767,7 +767,7 @@ class ChatEngine:
                 ctx = self.memory.build_context_prompt(current_query=message)
                 full_system = SYSTEM_PROMPT + "\n\n" + ctx
                 self.history[0] = {"role": "system", "content": full_system}
-                log.debug(f"[Chat] 注入记忆上下文，prompt 长度={len(full_system)}，记忆内容={ctx}")
+                log.debug(f"[Chat] 注入记忆上下文，prompt 长度={len(full_system)}")
 
             if len(self.history) > 8:
                 saved_system = self.history[0]

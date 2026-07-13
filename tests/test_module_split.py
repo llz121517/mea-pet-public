@@ -332,7 +332,7 @@ class TestRefactorRuntimeRegressions(unittest.TestCase):
         host = type("Host", (), {})()
         host.chat_engine = FakeEngine()
 
-        PetChatFlowMixin._do_memory_ops_sync(host, "记住了喵", "happy")
+        PetChatFlowMixin._do_memory_ops_sync(host, "记住了喵", "happy", "请记住这句话")
 
         self.assertEqual(
             host.chat_engine.memory.chats,

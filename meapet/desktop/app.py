@@ -211,10 +211,28 @@ class MeaPet(
 
     def _init_chat(self):
         self.memory = MeaMemory()
-        self.memory.daily_maintenance()
+        self._schedule_memory_maintenance()
         self.chat_engine = create_engine_from_config(self.config, self.memory)
         if self.chat_engine.backend == "ollama" and self.chat_engine.available:
             QTimer.singleShot(2000, self._show_warmup_status)
+
+    def _schedule_memory_maintenance(self):
+        """将生命周期维护放入后台线程，不阻塞启动"""
+        if hasattr(self, '_maintenance_done') and self._maintenance_done:
+            return
+        self._maintenance_done = False
+        import threading
+        def _run():
+            try:
+                self.memory.lifecycle_maintenance()
+                log.info("[memory] 后台生命周期维护完成")
+            except Exception as e:
+                log.error(f"[memory] 后台维护异常: {e}")
+            finally:
+                self._maintenance_done = True
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        log.info("[memory] 后台生命周期维护已调度")
 
     def _show_warmup_status(self):
         if getattr(self.chat_engine, "_warmed_up", False):
@@ -396,7 +414,7 @@ def main():
 
     log.info(f"[boot] python={sys.version.split()[0]} exe={sys.executable}")
     log.info(f"[boot] cwd={os.getcwd()} root={PROJECT_ROOT}")
-    log.info(f"[boot] FORCE_PNG={os.environ.get('MEAPETFORCE_PNG', '')}")
+    log.info(f"[boot] FORCE_PNG={os.environ.get('MEAPET_FORCE_PNG', '')}")
 
     try:
         app = QApplication(sys.argv)

@@ -7,7 +7,7 @@ import traceback
 import sys
 
 # ====================== 全局配置项 ======================
-LOG_LEVEL = "DEBUG"          # 默认级别，可设为 "DEBUG","INFO","WARN","ERROR"
+LOG_LEVEL = "INFO"           # 默认级别，可设为 "DEBUG","INFO","WARN","ERROR"；调试载荷仅在 MEAPET_DEBUG=1 时输出
 LOG_DIR = "logs"             # 日志文件存放目录
 LOG_KEEP_DAYS = 7            # 保留最近几天的日志文件
 # ====================================================
