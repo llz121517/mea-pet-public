@@ -7,7 +7,11 @@ from typing import Any
 from .broker import CompanionControlBroker
 
 
-def build_companion_mcp(broker: CompanionControlBroker):
+def build_companion_mcp(
+    broker: CompanionControlBroker,
+    *,
+    transport_security=None,
+):
     """构造只包含四个命名空间工具的 FastMCP 服务器。"""
     try:
         from mcp.server.fastmcp import FastMCP
@@ -23,6 +27,7 @@ def build_companion_mcp(broker: CompanionControlBroker):
         ),
         stateless_http=True,
         json_response=True,
+        transport_security=transport_security,
     )
 
     @server.tool(name="meapet.say", structured_output=True)

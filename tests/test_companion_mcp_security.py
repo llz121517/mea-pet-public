@@ -7,6 +7,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 import httpx
 
@@ -46,6 +48,7 @@ class TestControlServerConfig(unittest.TestCase):
         token = ensure_control_token(raw)
         self.assertGreaterEqual(len(token), 43)
         self.assertEqual(raw["auth_token"], token)
+        self.assertEqual(ensure_control_token(raw), token)
 
         with self.assertRaisesRegex(ValueError, "HTTP"):
             ControlServerConfig(
@@ -94,6 +97,30 @@ class TestControlServerConfig(unittest.TestCase):
                 key_file=str(key),
             )
             self.assertEqual(config.scheme, "https")
+
+    def test_rejects_wildcard_hosts_short_tokens_and_invalid_limits(self):
+        from meapet.control.transport import ControlServerConfig
+
+        cases = (
+            ({"listen_host": "0.0.0.0", "auth_token": "x" * 48}, "interface"),
+            ({"listen_host": "localhost", "auth_token": "x" * 48}, "literal IP"),
+            ({"listen_host": "127.0.0.1", "auth_token": "short"}, "auth_token"),
+            (
+                {
+                    "listen_host": "127.0.0.1",
+                    "auth_token": "x" * 48,
+                    "rate_limit_per_minute": 0,
+                },
+                "rate_limit",
+            ),
+        )
+        for values, message in cases:
+            with self.subTest(values=values), self.assertRaisesRegex(ValueError, message):
+                ControlServerConfig(
+                    allowed_agent_ip="127.0.0.1",
+                    port=8765,
+                    **values,
+                )
 
 
 class TestControlSecurityMiddleware(unittest.IsolatedAsyncioTestCase):
@@ -185,6 +212,11 @@ class TestControlSecurityMiddleware(unittest.IsolatedAsyncioTestCase):
             ).status_code,
             413,
         )
+        accepted_origin = await self._request(
+            self._config(rate_limit_per_minute=10),
+            headers={"Origin": "http://127.0.0.1:8765"},
+        )
+        self.assertEqual(accepted_origin.status_code, 200)
 
     async def test_rate_limit_is_per_source_and_returns_retry_after(self):
         from meapet.control.transport import ControlSecurityMiddleware
@@ -220,6 +252,54 @@ class TestControlAsgiSurface(unittest.TestCase):
 
         self.assertEqual(app.mcp_endpoint, "/mcp")
         self.assertEqual(app.tool_count, 4)
+
+    def test_runtime_start_and_stop_are_idempotent(self):
+        from meapet.control.broker import CompanionControlBroker
+        from meapet.control.transport import (
+            CompanionMcpRuntime,
+            ControlServerConfig,
+        )
+
+        runtime = CompanionMcpRuntime(
+            CompanionControlBroker(state={}),
+            ControlServerConfig(
+                listen_host="127.0.0.1",
+                allowed_agent_ip="127.0.0.1",
+                port=8765,
+                auth_token="t" * 48,
+            ),
+        )
+
+        class Future:
+            def __init__(self):
+                self.result_calls = 0
+
+            @staticmethod
+            def done():
+                return False
+
+            def result(self, timeout=None):
+                self.result_calls += 1
+
+        future = Future()
+        submitted = []
+
+        def submit(coroutine):
+            submitted.append(coroutine)
+            coroutine.close()
+            return future
+
+        with mock.patch("meapet.async_runtime.submit", side_effect=submit):
+            runtime.start()
+            runtime.start()
+        self.assertEqual(len(submitted), 1)
+
+        server = SimpleNamespace(should_exit=False)
+        runtime._server = server
+        runtime.stop(timeout_seconds=0.1)
+        self.assertTrue(server.should_exit)
+        self.assertEqual(future.result_calls, 1)
+        self.assertFalse(runtime.running)
 
 
 if __name__ == "__main__":
