@@ -506,6 +506,37 @@ class TestAgentChatPolling(unittest.TestCase):
         self.assertEqual(host._agent_history, [])
         self.assertFalse(hasattr(host, "last_mood"))
 
+    def test_legacy_direct_failure_is_a_neutral_system_error_without_raw_details(self):
+        from meapet.desktop.chat_flow import PetChatFlowMixin
+
+        class Host(PetChatFlowMixin):
+            _awaiting_reply = True
+            _active_timeline_turn_id = ""
+
+            def __init__(self):
+                self.system_messages = []
+
+            def show_reply(self, *_args, **_kwargs):
+                raise AssertionError("系统错误不能伪装成角色回复")
+
+            def _show_bubble(self, text, duration_ms=None, mood=None):
+                self.system_messages.append((text, duration_ms, mood))
+
+            def _position_bubble(self):
+                pass
+
+        host = Host()
+        with mock.patch("meapet.desktop.chat_flow.log_error"):
+            host._on_chat_error("Authorization: Bearer secret-backend-detail")
+
+        self.assertFalse(host._awaiting_reply)
+        self.assertEqual(len(host.system_messages), 1)
+        text, duration, mood = host.system_messages[0]
+        self.assertIn("模型服务", text)
+        self.assertNotIn("secret-backend-detail", text)
+        self.assertEqual(duration, 10000)
+        self.assertIsNone(mood)
+
     def test_agent_segments_and_tool_states_are_projected_to_timeline(self):
         from meapet.agent.base import ToolStatus
         from meapet.conversation.output_protocol import SegmentCompleted

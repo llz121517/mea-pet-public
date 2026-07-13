@@ -89,6 +89,7 @@ class TestWizardConversationConfig(unittest.TestCase):
         page.agent_session_id.setText("session-a")
         page.agent_session_key.setText("memory-a")
         page.agent_history_turns.setValue(5)
+        page.timeline_turns.setValue(9)
         page.control_enabled.setChecked(True)
         page.control_listen_host.setText("192.168.50.10")
         page.control_allowed_ip.setText("192.168.50.20")
@@ -105,6 +106,7 @@ class TestWizardConversationConfig(unittest.TestCase):
             "http://192.168.50.20:8642",
         )
         self.assertEqual(config["llm"]["agent"]["history_turns"], 5)
+        self.assertEqual(config["ui"]["timeline_turns"], 9)
         self.assertEqual(config["llm"]["direct"]["model"], "saved-model")
         self.assertEqual(
             config["agent_control"],
@@ -158,6 +160,7 @@ class TestWizardConversationConfig(unittest.TestCase):
                 "key_file": "server-key.pem",
                 "ca_file": "client-ca.pem",
             },
+            "ui": {"timeline_turns": 7},
         }
 
         self.wizard.apply_conversation_config(config)
@@ -167,6 +170,8 @@ class TestWizardConversationConfig(unittest.TestCase):
         self.assertEqual(collected["llm"]["agent"]["session_id"], "resume-me")
         self.assertEqual(collected["llm"]["direct"]["model"], "local-model")
         self.assertEqual(collected["agent_control"]["port"], 9000)
+        self.assertEqual(self.wizard.backend_page.timeline_turns.value(), 7)
+        self.assertEqual(collected["ui"]["timeline_turns"], 7)
 
     def test_openclaw_remote_plaintext_ws_requires_explicit_visible_opt_in(self):
         page = self.wizard.backend_page
