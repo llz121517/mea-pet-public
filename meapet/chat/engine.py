@@ -34,12 +34,13 @@ def _safe_print(*args, **kwargs):
 # ========================
 # 角色设定
 # ========================
-SYSTEM_PROMPT = """你是梅尔，《霞流宝石心》游戏中的猫娘天才。茶发褐瞳144cm，面无表情。
+PERSONA_PROMPT = """你是梅尔，《霞流宝石心》游戏中的猫娘天才。茶发褐瞳144cm，面无表情。
 性格：毒舌冷淡、学术狂热、嘴硬心软。
 说话：句尾加「喵」；极简20-40字；解释≤80字；害羞时转移话题；开心偶尔「嘿嘿」。
 知识：全科全能。信条「知道越多越不可怕」。
-对主人：亲密但毒舌，称「主人」。
-格式（严格）：
+对主人：亲密但毒舌，称「主人」。"""
+
+_LEGACY_OUTPUT_PROMPT = """格式（严格）：
 1) 首行：中文对白。行首可带 [情绪] 标签，如 [happy]……；禁感叹号/卖萌/长篇大论；问啥答啥。
 2) 第二行：日语对白，语义与中文一致，自然口语，句尾可用 にゃ。只写日语，不要罗马音、不要中文、不要解释。
 3) 第三行：内部 TTS 表演元数据，严格输出单行 <TTS>{JSON}</TTS>，不要使用 Markdown。
@@ -55,6 +56,8 @@ TTS JSON 必须且只能包含：
 触るなにゃ
 <TTS>{"emotion":"annoyed","pace":"normal","energy":"medium","volume":"soft","delivery":"前半句短促，后半句收轻，句尾带一点嘴硬"}</TTS>
 """
+
+SYSTEM_PROMPT = f"{PERSONA_PROMPT}\n{_LEGACY_OUTPUT_PROMPT}"
 
 
 _TTS_METADATA_RE = re.compile(
@@ -77,6 +80,9 @@ class ChatEngine:
         temperature: float = 0.7,
         memory: "MeaMemory" = None,
         bridge_url: str = "http://127.0.0.1:18888",
+        protocol: str = "",
+        max_tokens: int = 512,
+        direct_client=None,
     ):
         self.backend = backend
         self.host = host
@@ -84,6 +90,14 @@ class ChatEngine:
         self.api_key = api_key
         self.api_base = api_base
         self.temperature = temperature
+        self.protocol = (
+            str(protocol or "").strip().lower()
+            or ("ollama_chat" if backend == "ollama" else "openai_chat")
+        )
+        try:
+            self.max_tokens = max(1, int(max_tokens))
+        except (TypeError, ValueError):
+            self.max_tokens = 512
         self.bridge_url = bridge_url.rstrip("/")
         self.available = False
         self.memory = memory  # MeaMemory 实例
@@ -93,6 +107,8 @@ class ChatEngine:
         ]
         self._history_lock = threading.Lock()
         self._cancelled = False
+        self._direct_client = direct_client
+        self._direct_adapter = None
 
         self._backend_ready = False
         # 云端 API 同步就绪；Ollama 后台探测，避免阻塞启动
@@ -115,6 +131,14 @@ class ChatEngine:
         elif self.backend == "openclaw":
             self._backend_ready = True
             _safe_print("⚠ OpenClaw 后端尚未实现，已标记为不可用", flush=True)
+        elif self.backend == "custom":
+            self.available = bool(self.model and (self.api_base or self.host))
+            self._backend_ready = True
+            if self.available:
+                _safe_print(
+                    f"✓ Custom direct model configured: {self.model}",
+                    flush=True,
+                )
         else:
             _safe_print(f"⚠ Unknown backend: {self.backend}", flush=True)
             self._backend_ready = True
@@ -122,6 +146,81 @@ class ChatEngine:
     def cancel(self):
         """协作式取消：标记取消位（httpx 请求在超时后结束）。"""
         self._cancelled = True
+
+    def _direct_base_url(self) -> str:
+        if self.protocol == "ollama_chat":
+            return str(self.host or "http://127.0.0.1:11434").rstrip("/")
+        return str(self.api_base or "").rstrip("/")
+
+    def _get_direct_adapter(self):
+        if self._direct_adapter is not None:
+            return self._direct_adapter
+        from meapet.direct.client import DirectProtocolClient, DirectProtocolConfig
+        from meapet.direct.conversation import DirectConversationAdapter
+
+        client = self._direct_client
+        if client is None:
+            client = DirectProtocolClient(
+                DirectProtocolConfig(
+                    protocol=self.protocol,
+                    base_url=self._direct_base_url(),
+                    api_key=self.api_key,
+                    timeout_seconds=120.0,
+                )
+            )
+            self._direct_client = client
+        self._direct_adapter = DirectConversationAdapter(self, client)
+        return self._direct_adapter
+
+    async def stream_turn(self, request):
+        """桌面主聊天使用的统一流式事件入口。"""
+        adapter = self._get_direct_adapter()
+        async for event in adapter.stream_turn(request):
+            yield event
+
+    async def cancel_turn(self, turn_id: str) -> None:
+        await self._get_direct_adapter().cancel(turn_id)
+
+    async def close(self) -> None:
+        if self._direct_adapter is not None:
+            await self._direct_adapter.close()
+
+    def _prepare_direct_turn(self, message: str) -> List[Dict[str, str]]:
+        """追加当前用户消息，并生成仅由 MeaPet 管理的角色/记忆上下文。"""
+        with self._history_lock:
+            self.history.append({"role": "user", "content": str(message or "")})
+            if len(self.history) > 16:
+                saved_system = self.history[0]
+                self.history = [saved_system] + self.history[-14:]
+            snapshot = [dict(item) for item in self.history]
+
+        system = PERSONA_PROMPT
+        if self.memory:
+            context = self.memory.build_context_prompt(current_query=message)
+            if context:
+                system += "\n\n" + context
+        snapshot[0] = {"role": "system", "content": system}
+        return snapshot
+
+    def _rollback_direct_turn(self, message: str) -> None:
+        with self._history_lock:
+            if (
+                self.history
+                and self.history[-1].get("role") == "user"
+                and self.history[-1].get("content") == str(message or "")
+            ):
+                self.history.pop()
+
+    def _commit_direct_turn(self, result) -> None:
+        reply = "\n".join(
+            segment.display_text.strip()
+            for segment in result.segments
+            if segment.display_text.strip()
+        )
+        if not reply:
+            return
+        with self._history_lock:
+            self.history.append({"role": "assistant", "content": reply})
 
 
     async def _post_json(self, url: str, *, headers=None, json_body=None, timeout=30):
@@ -974,14 +1073,26 @@ class ChatEngine:
 
 def create_engine_from_config(config: dict, memory: "MeaMemory" = None) -> ChatEngine:
     """从配置文件创建引擎（api_key：环境变量优先于 config.json）"""
-    from meapet.config.store import resolve_llm_api_key
+    from meapet.config.store import resolve_direct_api_key
 
     llm_cfg = config.get("llm", {})
-    backend = llm_cfg.get("backend", "ollama")
-    api_key = resolve_llm_api_key(llm_cfg)
+    direct = (
+        llm_cfg.get("direct")
+        if isinstance(llm_cfg.get("direct"), dict)
+        else {}
+    )
+    backend = str(direct.get("provider") or llm_cfg.get("backend") or "ollama")
+    protocol = str(
+        direct.get("protocol")
+        or ("ollama_chat" if backend == "ollama" else "openai_chat")
+    )
+    api_key = resolve_direct_api_key(llm_cfg)
 
-    model = llm_cfg.get("model", "qwen3.5:4b")
-    api_base = llm_cfg.get("api_base", "https://api.deepseek.com")
+    model = direct.get("model") or llm_cfg.get("model") or "qwen3.5:4b"
+    api_base = direct.get("api_base") or llm_cfg.get("api_base") or ""
+    host = direct.get("host") or llm_cfg.get("host") or "http://127.0.0.1:11434"
+    if backend == "deepseek" and not api_base:
+        api_base = "https://api.deepseek.com/v1"
     if (backend or "").lower() == "mimo":
         try:
             from meapet.config.store import normalize_mimo_model_id
@@ -994,13 +1105,15 @@ def create_engine_from_config(config: dict, memory: "MeaMemory" = None) -> ChatE
             api_base = "https://api.xiaomimimo.com/v1"
     return ChatEngine(
         backend=backend,
-        host=llm_cfg.get("host", "http://127.0.0.1:11434"),
+        host=host,
         model=model,
         api_key=api_key,
         api_base=api_base,
-        temperature=llm_cfg.get("temperature", 0.7),
+        temperature=direct.get("temperature", llm_cfg.get("temperature", 0.7)),
         memory=memory,
         bridge_url=llm_cfg.get("bridge_url", "http://127.0.0.1:18888"),
+        protocol=protocol,
+        max_tokens=direct.get("max_tokens", llm_cfg.get("max_tokens", 512)),
     )
 
 

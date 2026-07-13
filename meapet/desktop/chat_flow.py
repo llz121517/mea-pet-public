@@ -247,21 +247,20 @@ class PetChatFlowMixin:
 
     def _make_chat_worker(self, message: str):
         """按显式模式选择直连模型或 Agent worker。"""
-        if not self._is_agent_mode():
-            turn_id = f"meapet-{uuid.uuid4().hex}"
-            self._active_timeline_turn_id = turn_id
-            self._timeline_start_turn(
-                turn_id,
-                source="user_reply",
-                user_text=message,
-            )
-            return ChatWorker(self.chat_engine, message)
-
-        adapter = getattr(self, "agent_adapter", None)
-        if adapter is None:
-            raise RuntimeError("Agent 后端尚未初始化")
+        agent_mode = self._is_agent_mode()
+        if agent_mode:
+            adapter = getattr(self, "agent_adapter", None)
+            if adapter is None:
+                raise RuntimeError("Agent 后端尚未初始化")
+            history = tuple(getattr(self, "_agent_history", ()) or ())
+        else:
+            adapter = getattr(self, "chat_engine", None)
+            if adapter is None or not callable(getattr(adapter, "stream_turn", None)):
+                raise RuntimeError("直连模型后端尚未初始化")
+            history = ()
 
         turn_id = f"meapet-{uuid.uuid4().hex}"
+        self._active_timeline_turn_id = turn_id
         tts = getattr(self, "tts", None)
         tts_enabled = bool(tts is not None and getattr(tts, "enabled", False))
         bubble_config = (getattr(self, "config", {}) or {}).get(
@@ -279,7 +278,7 @@ class PetChatFlowMixin:
         request = AgentTurnRequest(
             turn_id=turn_id,
             user_text=message,
-            history=tuple(getattr(self, "_agent_history", ()) or ()),
+            history=history,
             frontend_context=self._build_agent_frontend_context(),
             tts_enabled=tts_enabled,
         )
@@ -405,8 +404,9 @@ class PetChatFlowMixin:
             self._chat_worker = None
 
         if error and getattr(self, "_awaiting_reply", False):
-            log.error("[agent] 事件流异常，已转为安全系统错误")
-            self._fail_agent_turn("Agent 连接意外中断，请稍后再试。")
+            log.error("[chat] 事件流异常，已转为安全系统错误")
+            backend_name = "Agent" if self._is_agent_mode() else "模型服务"
+            self._fail_agent_turn(f"{backend_name}连接意外中断，请稍后再试。")
             return
 
         # 正常适配器总会发出完成、失败或取消事件。若流静默结束，不能永久锁住输入。
@@ -415,7 +415,8 @@ class PetChatFlowMixin:
             and getattr(self, "_agent_turn_result", None) is None
             and not (getattr(self, "_agent_tts_workers", {}) or {})
         ):
-            self._fail_agent_turn("Agent 未返回可用回复。")
+            backend_name = "Agent" if self._is_agent_mode() else "模型服务"
+            self._fail_agent_turn(f"{backend_name}未返回可用回复。")
 
     def _agent_bubble(self, index: int, *, text: str = "", mood=None):
         bubbles = getattr(self, "_agent_bubbles", None)
@@ -549,7 +550,7 @@ class PetChatFlowMixin:
             if segment.display_text
         ).strip()
         user_text = str(getattr(self, "_last_user_msg", "") or "").strip()
-        if user_text and reply:
+        if self._is_agent_mode() and user_text and reply:
             history = list(getattr(self, "_agent_history", ()) or ())
             history.extend(
                 (
@@ -566,6 +567,14 @@ class PetChatFlowMixin:
             except (TypeError, ValueError):
                 history_turns = 5
             self._agent_history = history[-history_turns * 2:] if history_turns else []
+        elif user_text and reply:
+            mood = segments[0].mood if segments else "neutral"
+            QTimer.singleShot(
+                0,
+                lambda current_reply=reply, current_mood=mood, user=user_text: (
+                    self._do_memory_ops(current_reply, current_mood, user)
+                ),
+            )
 
         timeline = getattr(self, "_conversation_timeline", None)
         key = getattr(self, "_conversation_key", None)
@@ -576,7 +585,7 @@ class PetChatFlowMixin:
         if hasattr(self, '_chat_timeout') and self._chat_timeout:
             self._chat_timeout.stop()
         set_awaiting_reply_state(self, False)
-        log.info(f"[agent] 本轮呈现完成: turn={turn_id[:24]}")
+        log.info(f"[chat] 本轮呈现完成: turn={turn_id[:24]}")
 
     def _fail_agent_turn(self, safe_message: str) -> None:
         timeline = getattr(self, "_conversation_timeline", None)
@@ -589,7 +598,7 @@ class PetChatFlowMixin:
         self._agent_format_repair_pending = False
         if hasattr(self, '_chat_timeout') and self._chat_timeout:
             self._chat_timeout.stop()
-        self._show_bubble(str(safe_message or "Agent 请求失败。"), 10000, mood=None)
+        self._show_bubble(str(safe_message or "回复请求失败。"), 10000, mood=None)
         self._position_bubble()
         set_awaiting_reply_state(self, False)
 

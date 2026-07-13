@@ -132,7 +132,11 @@ class AgentChatWorker:
 
     def terminate(self):
         try:
-            submit(self.adapter.cancel(self.request.turn_id))
+            cancel = getattr(self.adapter, "cancel_turn", None)
+            if not callable(cancel):
+                cancel = getattr(self.adapter, "cancel", None)
+            if callable(cancel):
+                submit(cancel(self.request.turn_id))
         except Exception:
             pass
         try:

@@ -201,6 +201,15 @@ def resolve_llm_api_key(llm_cfg: dict) -> str:
     return resolve_secret(llm_cfg.get("api_key", ""), names)
 
 
+def resolve_direct_api_key(llm_cfg: dict) -> str:
+    """解析显式 direct profile；环境变量仍优先于文件值。"""
+    direct = llm_cfg.get("direct") if isinstance(llm_cfg.get("direct"), dict) else {}
+    provider = str(direct.get("provider") or llm_cfg.get("backend") or "custom").lower()
+    names = ENV_LLM_KEY.get(provider, ("MEAPET_API_KEY",))
+    value = resolve_secret(str(direct.get("api_key") or ""), names)
+    return value or resolve_llm_api_key(llm_cfg)
+
+
 def resolve_tts_api_key(tts_cfg: dict, llm_cfg: Optional[dict] = None) -> str:
     llm_cfg = llm_cfg or {}
     resolved = resolve_secret(tts_cfg.get("api_key", ""), ENV_TTS_KEY)
