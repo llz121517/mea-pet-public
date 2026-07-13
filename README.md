@@ -355,6 +355,8 @@ uv pip install -r linux_requirements.txt --python .venv\Scripts\python.exe
 
 - 通过子进程调用独立整合包，不污染主进程依赖
 - 支持多参考音频目录（`clam`/`normal`/`soft`）
+- 可用 `tts.gsv_ref_wav` 指定固定 WAV，并用 `tts.gsv_ref_lang` 标明参考语言（`jp` / `zh` / `en`）；留空路径时仍按情绪自动选择
+- 固定 WAV 旁的同名 `.txt` 会作为参考文本，例如 `custom.wav` 搭配 `custom.txt`
 - 高还原力，适合需要丰富情感的语音场景
 
 ### 国内加速

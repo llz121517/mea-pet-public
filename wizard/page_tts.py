@@ -29,6 +29,7 @@ from wizard.env_utils import (
 from wizard.page_tts_gsv import TtsPageGsvMixin
 from wizard.page_tts_mimo import TtsPageMimoMixin
 from wizard.page_tts_vits import TtsPageVitsMixin
+from meapet.config.store import normalize_gsv_ref_language
 
 
 class TTSPage(TtsPageGsvMixin, TtsPageMimoMixin, TtsPageVitsMixin, QFrame):
@@ -276,6 +277,50 @@ class TTSPage(TtsPageGsvMixin, TtsPageMimoMixin, TtsPageVitsMixin, QFrame):
         path_row.addWidget(browse_btn)
         gsv_layout.addLayout(path_row)
 
+        ref_hint = QLabel(
+            "指定参考音频（可选；留空时继续按情绪自动选择）。"
+            "若旁边有同名 .txt，会自动作为参考文本。"
+        )
+        ref_hint.setObjectName("HelperText")
+        ref_hint.setWordWrap(True)
+        gsv_layout.addWidget(ref_hint)
+
+        ref_row = QHBoxLayout()
+        self.gsv_ref_wav_input = QLineEdit()
+        self.gsv_ref_wav_input.setObjectName("GsvReferenceAudio")
+        self.gsv_ref_wav_input.setPlaceholderText(
+            "例如 ./GPT-Sovits/normal/jp_normal.wav"
+        )
+        self.gsv_ref_wav_input.setStyleSheet(STYLE_INPUT)
+        self.gsv_ref_wav_input.setAccessibleName("GPT-SoVITS 指定参考音频路径")
+        self.gsv_ref_wav_input.setAccessibleDescription(
+            "选择后将优先于按情绪自动选择的参考音频"
+        )
+        ref_row.addWidget(self.gsv_ref_wav_input, 1)
+
+        ref_browse_btn = QPushButton("选择音频…")
+        ref_browse_btn.setMinimumSize(104, MIN_TARGET_SIZE)
+        ref_browse_btn.setAccessibleName("选择 GPT-SoVITS 参考音频")
+        ref_browse_btn.clicked.connect(self._browse_gsv_ref_wav)
+        ref_row.addWidget(ref_browse_btn)
+        gsv_layout.addLayout(ref_row)
+
+        ref_lang_row = QHBoxLayout()
+        ref_lang_label = QLabel("参考音频语言：")
+        ref_lang_label.setObjectName("FieldLabel")
+        ref_lang_row.addWidget(ref_lang_label)
+        self.gsv_ref_lang_combo = QComboBox()
+        self.gsv_ref_lang_combo.setObjectName("GsvReferenceLanguage")
+        self.gsv_ref_lang_combo.setAccessibleName("GPT-SoVITS 参考音频语言")
+        self.gsv_ref_lang_combo.setAccessibleDescription(
+            "用于解析参考音频对应的同名参考文本"
+        )
+        self.gsv_ref_lang_combo.addItem("日语", "jp")
+        self.gsv_ref_lang_combo.addItem("中文", "zh")
+        self.gsv_ref_lang_combo.addItem("英语", "en")
+        ref_lang_row.addWidget(self.gsv_ref_lang_combo, 1)
+        gsv_layout.addLayout(ref_lang_row)
+
         self._schedule_startup(300, self._check_gsv)
         layout.addWidget(self.gsv_container)
 
@@ -347,6 +392,8 @@ class TTSPage(TtsPageGsvMixin, TtsPageMimoMixin, TtsPageVitsMixin, QFrame):
             "mimo_translate_jp_cb",
             "mimo_voiceclone_cb",
             "mimo_clone_ref_input",
+            "gsv_ref_wav_input",
+            "gsv_ref_lang_combo",
         ):
             if hasattr(self, attr):
                 getattr(self, attr).setEnabled(on)
@@ -551,6 +598,19 @@ class TTSPage(TtsPageGsvMixin, TtsPageMimoMixin, TtsPageVitsMixin, QFrame):
             cref = (tts_cfg.get("clone_ref") or tts_cfg.get("voice_ref") or "").strip()
             if cref:
                 self.mimo_clone_ref_input.setText(cref)
+
+        if hasattr(self, "gsv_ref_wav_input"):
+            self.gsv_ref_wav_input.setText(
+                str(tts_cfg.get("gsv_ref_wav") or "").strip()
+            )
+        if hasattr(self, "gsv_ref_lang_combo"):
+            ref_lang = normalize_gsv_ref_language(
+                tts_cfg.get("gsv_ref_lang")
+            )
+            for index in range(self.gsv_ref_lang_combo.count()):
+                if self.gsv_ref_lang_combo.itemData(index) == ref_lang:
+                    self.gsv_ref_lang_combo.setCurrentIndex(index)
+                    break
 
         vits_py = (tts_cfg.get("vits_python") or "").strip()
         if vits_py and hasattr(self, "vits_python_input"):

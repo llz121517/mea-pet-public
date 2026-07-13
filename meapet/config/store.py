@@ -52,6 +52,33 @@ DEFAULT_BUBBLE = {
 
 DEFAULT_WATCHER_INTERVAL = {"min_ms": 180000, "max_ms": 360000}
 
+_GSV_REF_LANGUAGE_ALIASES = {
+    "jp": "jp",
+    "ja": "jp",
+    "jpn": "jp",
+    "japanese": "jp",
+    "日文": "jp",
+    "日语": "jp",
+    "zh": "zh",
+    "cn": "zh",
+    "zh-cn": "zh",
+    "zh_cn": "zh",
+    "chinese": "zh",
+    "中文": "zh",
+    "汉语": "zh",
+    "en": "en",
+    "eng": "en",
+    "english": "en",
+    "英文": "en",
+    "英语": "en",
+}
+
+
+def normalize_gsv_ref_language(value: object) -> str:
+    """把 GPT-SoVITS 参考音频语言规范为 ``jp`` / ``zh`` / ``en``。"""
+    raw = str(value or "jp").strip().lower()
+    return _GSV_REF_LANGUAGE_ALIASES.get(raw, "jp")
+
 
 def project_root() -> str:
     from meapet.paths import project_root as _pr
@@ -318,12 +345,16 @@ def normalize_config(config: dict) -> dict:
     ui["first_run_hint_shown"] = bool(ui.get("first_run_hint_shown", False))
     cfg["ui"] = ui
 
-    # tts sync
+    # TTS：音频同步 + 可选固定 GPT-SoVITS 参考音频
     tts = cfg.get("tts") if isinstance(cfg.get("tts"), dict) else {}
     if "sync_with_audio" not in tts:
         tts["sync_with_audio"] = False
     else:
         tts["sync_with_audio"] = bool(tts["sync_with_audio"])
+    tts["gsv_ref_wav"] = str(tts.get("gsv_ref_wav") or "").strip()
+    tts["gsv_ref_lang"] = normalize_gsv_ref_language(
+        tts.get("gsv_ref_lang")
+    )
     cfg["tts"] = tts
 
     # watcher 统一结构（interval 内嵌，不再用顶层 watcher_interval）

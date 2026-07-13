@@ -586,6 +586,16 @@ class SetupWizard(QWidget):
                 "gpt_model": "mea_pro-e50.ckpt",
                 "sovits_model": "mea_pro_e24_s13704.pth",
                 "ref_dir": "./GPT-Sovits",
+                "gsv_ref_wav": (
+                    self.tts_page.gsv_ref_wav_input.text().strip()
+                    if hasattr(self.tts_page, "gsv_ref_wav_input")
+                    else ""
+                ),
+                "gsv_ref_lang": (
+                    self.tts_page.gsv_ref_lang_combo.currentData() or "jp"
+                    if hasattr(self.tts_page, "gsv_ref_lang_combo")
+                    else "jp"
+                ),
                 "top_k": 15, "top_p": 0.8,
                 "temperature": 0.6, "speed": 1.0,
                 "translate_to_jp": (
