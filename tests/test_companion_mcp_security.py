@@ -88,6 +88,14 @@ class TestControlServerConfig(unittest.TestCase):
                     key_file=str(key),
                 )
 
+            ca = Path(td) / "client-ca.pem"
+            ca.write_text("test ca", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "CA"):
+                ControlServerConfig(
+                    auth_token="x" * 48,
+                    ca_file=str(ca),
+                )
+
             key.write_text("test key", encoding="utf-8")
             config = ControlServerConfig(
                 listen_host="192.168.1.10",

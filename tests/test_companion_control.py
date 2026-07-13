@@ -141,6 +141,33 @@ class TestCompanionStateAndExpression(unittest.IsolatedAsyncioTestCase):
         command = broker.take_expressions()[0]
         self.assertEqual((command.mood, command.motion), ("happy", "wave"))
 
+    async def test_expression_idempotency_cache_is_bounded(self):
+        from meapet.control.broker import CompanionControlBroker
+
+        broker = CompanionControlBroker(
+            state=_state(),
+            max_expression_dedupe=8,
+        )
+        for index in range(20):
+            result = await broker.express(
+                mood="happy",
+                request_id=f"express-{index}",
+            )
+            self.assertFalse(result["duplicate"])
+        broker.take_expressions()
+
+        self.assertLessEqual(len(broker._expression_dedupe), 8)
+        evicted = await broker.express(
+            mood="happy",
+            request_id="express-0",
+        )
+        retained = await broker.express(
+            mood="happy",
+            request_id="express-19",
+        )
+        self.assertFalse(evicted["duplicate"])
+        self.assertTrue(retained["duplicate"])
+
 
 class TestCompanionCapture(unittest.IsolatedAsyncioTestCase):
     async def test_each_capture_creates_confirmation_request_and_returns_no_path(self):
