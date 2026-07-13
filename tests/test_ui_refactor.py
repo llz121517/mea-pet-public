@@ -1256,7 +1256,7 @@ class UiRefactorTests(unittest.TestCase):
         self.assertTrue(composer.send_button.isEnabled())
         self.assertFalse(composer.input.isReadOnly())
 
-    def test_chat_completion_releases_visible_busy_input(self) -> None:
+    def test_chat_completion_keeps_input_busy_until_tts_finishes(self) -> None:
         from meapet.desktop.chat_flow import PetChatFlowMixin
         from meapet.desktop.chat_input import ChatInputBox
 
@@ -1272,15 +1272,23 @@ class UiRefactorTests(unittest.TestCase):
                 return ""
 
         class Worker:
+            done = True
+
             def __init__(self, *_args, **_kwargs):
                 pass
 
             def start(self):
                 pass
 
+            def get_result(self):
+                return None
+
+        class Voice:
+            enabled = True
+
         class Host(PetChatFlowMixin):
             chat_engine = Engine()
-            tts = object()
+            tts = Voice()
             _awaiting_reply = True
 
             def show_reply(self, *_args, **_kwargs):
@@ -1303,6 +1311,12 @@ class UiRefactorTests(unittest.TestCase):
             "meapet.desktop.chat_flow.QTimer.singleShot"
         ):
             host._on_chat_done("回复完成", "neutral")
+
+        self.assertTrue(host._awaiting_reply)
+        self.assertTrue(host._chat_input.input.isReadOnly())
+        self.assertFalse(host._chat_input.send_button.isEnabled())
+
+        host._poll_tts()
 
         self.assertFalse(host._awaiting_reply)
         self.assertFalse(host._chat_input.input.isReadOnly())
