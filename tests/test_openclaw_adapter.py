@@ -358,6 +358,67 @@ class TestOpenClawAdapter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(completed), 1)
         self.assertEqual(completed[0].result.segments[0].voice_language, "zh")
 
+    async def test_malformed_output_is_repaired_once_in_an_isolated_session(self):
+        from meapet.agent.base import FormatRepairRequired, TurnCompleted
+        from meapet.agent.openclaw import OpenClawAdapter
+
+        malformed = "先保住这句文字"
+        repaired = (
+            "<MEAPET_SEGMENT><DISPLAY>先保住这句文字</DISPLAY>"
+            '<META>{"voice_text":"先保住这句文字","voice_language":"zh",'
+            '"mood":"neutral","tts_style":""}</META>'
+            "</MEAPET_SEGMENT><MEAPET_DONE />"
+        )
+        repair_scope = hashlib.sha256(
+            b"agent:main:meapet:test\x00turn-1"
+        ).hexdigest()[:24]
+        repair_session = f"agent:main:meapet:format-repair:{repair_scope}"
+        socket = self._socket_for_turn(
+            _chat_event("delta", deltaText=malformed, seq=1),
+            _chat_event("final", seq=2),
+            _response(
+                "repair:turn-1",
+                payload={"runId": "repair-run", "status": "started"},
+            ),
+            _chat_event(
+                "delta",
+                run_id="repair-run",
+                sessionKey=repair_session,
+                deltaText=repaired,
+                seq=1,
+            ),
+            _chat_event(
+                "final",
+                run_id="repair-run",
+                sessionKey=repair_session,
+                seq=2,
+            ),
+        )
+        adapter = OpenClawAdapter(self._config(), connector=_Connector(socket))
+
+        events = [event async for event in adapter.stream_turn(self._request())]
+
+        sends = [frame for frame in socket.sent if frame.get("method") == "chat.send"]
+        self.assertEqual(len(sends), 2)
+        repair = sends[1]
+        self.assertEqual(repair["id"], "repair:turn-1")
+        self.assertEqual(repair["params"]["sessionKey"], repair_session)
+        self.assertEqual(
+            repair["params"]["idempotencyKey"],
+            "turn-1-format-repair",
+        )
+        self.assertIn(malformed, repair["params"]["message"])
+        self.assertNotIn("现在几点", repair["params"]["message"])
+        repairs = [event for event in events if isinstance(event, FormatRepairRequired)]
+        completed = [event for event in events if isinstance(event, TurnCompleted)]
+        self.assertEqual(len(repairs), 1)
+        self.assertEqual(len(completed), 1)
+        self.assertEqual(
+            completed[0].result.segments[0].display_text,
+            "先保住这句文字",
+        )
+        self.assertFalse(completed[0].result.requires_repair(tts_enabled=True))
+
     async def test_tool_and_operation_events_expose_only_generic_safe_status(self):
         from meapet.agent.base import ToolStatus
         from meapet.agent.openclaw import OpenClawAdapter
