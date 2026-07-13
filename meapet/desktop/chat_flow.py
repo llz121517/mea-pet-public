@@ -9,7 +9,13 @@ import uuid
 from PyQt5.QtCore import QTimer
 
 from meapet.utils import debug_enabled, log_error, redact_text
-from meapet.agent.base import AgentTurnRequest, TurnCompleted
+from meapet.agent.base import (
+    AgentTurnRequest,
+    ToolStatus,
+    TurnCancelled,
+    TurnCompleted,
+    TurnFailed,
+)
 from meapet.agent.presentation import (
     AgentTurnPresentation,
     BeginBubble,
@@ -25,9 +31,16 @@ from meapet.agent.presentation import (
 )
 from meapet.chat.engine import SYSTEM_PROMPT
 from meapet.conversation.capabilities import build_agent_frontend_context
+from meapet.conversation.output_protocol import (
+    SegmentCompleted,
+    SegmentStarted,
+    SegmentTextDelta,
+)
+from meapet.conversation.timeline import ConversationKey
 from meapet.conversation.types import (
     CompanionState,
     FrontendCapabilities,
+    ReplySegment,
     normalize_voice_language,
 )
 from meapet.desktop import status_language
@@ -52,6 +65,95 @@ def _log_private_text(label: str, text: str, *, suffix: str = "") -> None:
 
 
 class PetChatFlowMixin:
+    def _refresh_conversation_key(self) -> ConversationKey:
+        llm = (getattr(self, "config", {}) or {}).get("llm") or {}
+        mode = str(llm.get("mode") or "direct").strip().lower()
+        if mode == "agent":
+            agent = llm.get("agent") or {}
+            key = ConversationKey(
+                "agent",
+                str(agent.get("kind") or "hermes"),
+                str(agent.get("session_id") or "pending"),
+            )
+        else:
+            direct = llm.get("direct") or {}
+            key = ConversationKey(
+                "direct",
+                str(direct.get("provider") or llm.get("backend") or "ollama"),
+                "local",
+            )
+        self._conversation_key = key
+        return key
+
+    def _timeline_start_turn(
+        self,
+        turn_id: str,
+        *,
+        source: str,
+        user_text: str = "",
+    ) -> None:
+        timeline = getattr(self, "_conversation_timeline", None)
+        if timeline is None:
+            return
+        key = getattr(self, "_conversation_key", None)
+        if key is None:
+            key = self._refresh_conversation_key()
+        timeline.start_turn(
+            key,
+            turn_id,
+            source=source,
+            user_text=user_text,
+        )
+
+    def _record_agent_timeline_event(self, event: object) -> None:
+        timeline = getattr(self, "_conversation_timeline", None)
+        key = getattr(self, "_conversation_key", None)
+        turn_id = str(getattr(self, "_active_agent_turn_id", "") or "")
+        if timeline is None or key is None or not turn_id:
+            return
+        if isinstance(event, SegmentStarted):
+            texts = getattr(self, "_timeline_segment_texts", None)
+            if texts is None:
+                texts = {}
+                self._timeline_segment_texts = texts
+            texts.setdefault(event.index, "")
+        elif isinstance(event, SegmentTextDelta):
+            texts = getattr(self, "_timeline_segment_texts", None)
+            if texts is None:
+                texts = {}
+                self._timeline_segment_texts = texts
+            texts[event.index] = texts.get(event.index, "") + event.delta
+            timeline.update_segment_text(key, turn_id, event.index, texts[event.index])
+        elif isinstance(event, SegmentCompleted):
+            timeline.complete_segment(key, turn_id, event.segment)
+        elif isinstance(event, ToolStatus):
+            safe_text = str(event.safe_text or "").strip() or {
+                "started": "正在处理",
+                "running": "仍在处理",
+                "succeeded": "处理完成",
+                "failed": "处理失败",
+            }.get(str(event.state or "").lower(), "状态已更新")
+            timeline.add_status(
+                key,
+                turn_id,
+                state=event.state,
+                safe_text=safe_text,
+            )
+        elif isinstance(event, TurnFailed):
+            timeline.fail_turn(key, turn_id, event.safe_message)
+        elif isinstance(event, TurnCancelled):
+            timeline.cancel_turn(key, turn_id)
+
+    def _bind_bubble_to_timeline(self, bubble, turn_id: str) -> None:
+        signal = getattr(bubble, "activated", None)
+        opener = getattr(self, "_show_timeline_turn", None)
+        if signal is None or not callable(opener) or not turn_id:
+            return
+        try:
+            signal.connect(lambda current=turn_id: opener(current))
+        except (AttributeError, RuntimeError, TypeError):
+            pass
+
     def _start_chat(self):
         """双击触发：在桌宠附近打开消息编辑器。"""
         log.info("[chat] 启动对话编辑器")
@@ -146,6 +248,13 @@ class PetChatFlowMixin:
     def _make_chat_worker(self, message: str):
         """按显式模式选择直连模型或 Agent worker。"""
         if not self._is_agent_mode():
+            turn_id = f"meapet-{uuid.uuid4().hex}"
+            self._active_timeline_turn_id = turn_id
+            self._timeline_start_turn(
+                turn_id,
+                source="user_reply",
+                user_text=message,
+            )
             return ChatWorker(self.chat_engine, message)
 
         adapter = getattr(self, "agent_adapter", None)
@@ -162,6 +271,7 @@ class PetChatFlowMixin:
         self._agent_turn_result = None
         self._agent_bubbles = {}
         self._agent_tts_workers = {}
+        self._timeline_segment_texts = {}
         self._agent_presentation = AgentTurnPresentation(
             tts_enabled=tts_enabled,
             reply_min_duration_ms=int(bubble_config.get("reply", 3000)),
@@ -172,6 +282,11 @@ class PetChatFlowMixin:
             history=tuple(getattr(self, "_agent_history", ()) or ()),
             frontend_context=self._build_agent_frontend_context(),
             tts_enabled=tts_enabled,
+        )
+        self._timeline_start_turn(
+            turn_id,
+            source="user_reply",
+            user_text=message,
         )
         return AgentChatWorker(adapter, request)
 
@@ -268,6 +383,7 @@ class PetChatFlowMixin:
         events = worker.take_events()
         presentation = getattr(self, "_agent_presentation", None)
         for event in events:
+            self._record_agent_timeline_event(event)
             if isinstance(event, TurnCompleted):
                 self._agent_turn_result = event.result
             if presentation is None:
@@ -314,6 +430,10 @@ class PetChatFlowMixin:
             return None
         bubble = stack.begin_message(text, mood=mood)
         bubbles[index] = bubble
+        self._bind_bubble_to_timeline(
+            bubble,
+            str(getattr(self, "_active_agent_turn_id", "") or ""),
+        )
         self._position_bubble()
         return bubble
 
@@ -361,7 +481,13 @@ class PetChatFlowMixin:
             )
             return
         if isinstance(action, ShowStatus):
-            self._show_bubble(action.safe_text, 4500, mood=None)
+            safe_text = str(action.safe_text or "").strip() or {
+                "started": "正在处理",
+                "running": "仍在处理",
+                "succeeded": "处理完成",
+                "failed": "处理失败",
+            }.get(str(action.state or "").lower(), "状态已更新")
+            self._show_bubble(safe_text, 4500, mood=None)
             self._position_bubble()
             return
         if isinstance(action, RequestFormatRepair):
@@ -441,6 +567,10 @@ class PetChatFlowMixin:
                 history_turns = 5
             self._agent_history = history[-history_turns * 2:] if history_turns else []
 
+        timeline = getattr(self, "_conversation_timeline", None)
+        key = getattr(self, "_conversation_key", None)
+        if timeline is not None and key is not None:
+            timeline.finish_turn(key, turn_id)
         self._active_agent_turn_id = ""
         self._agent_format_repair_pending = False
         if hasattr(self, '_chat_timeout') and self._chat_timeout:
@@ -449,6 +579,11 @@ class PetChatFlowMixin:
         log.info(f"[agent] 本轮呈现完成: turn={turn_id[:24]}")
 
     def _fail_agent_turn(self, safe_message: str) -> None:
+        timeline = getattr(self, "_conversation_timeline", None)
+        key = getattr(self, "_conversation_key", None)
+        turn_id = str(getattr(self, "_active_agent_turn_id", "") or "")
+        if timeline is not None and key is not None and turn_id:
+            timeline.fail_turn(key, turn_id, safe_message)
         self._agent_tts_workers = {}
         self._active_agent_turn_id = ""
         self._agent_format_repair_pending = False
@@ -459,6 +594,11 @@ class PetChatFlowMixin:
         set_awaiting_reply_state(self, False)
 
     def _cancel_agent_turn(self) -> None:
+        timeline = getattr(self, "_conversation_timeline", None)
+        key = getattr(self, "_conversation_key", None)
+        turn_id = str(getattr(self, "_active_agent_turn_id", "") or "")
+        if timeline is not None and key is not None and turn_id:
+            timeline.cancel_turn(key, turn_id)
         self._agent_tts_workers = {}
         self._active_agent_turn_id = ""
         self._agent_format_repair_pending = False
@@ -526,6 +666,30 @@ class PetChatFlowMixin:
                 tts_style = (eng.take_tts_style() or "").strip()
         except Exception as e:
             log.error(f"[tts] 取 TTS 风格失败: {e}")
+        timeline = getattr(self, "_conversation_timeline", None)
+        key = getattr(self, "_conversation_key", None)
+        turn_id = str(getattr(self, "_active_timeline_turn_id", "") or "")
+        if timeline is not None and key is not None and turn_id:
+            tts = getattr(self, "tts", None)
+            voice_language = normalize_voice_language(
+                getattr(tts, "voice_lang", "")
+                or ((getattr(self, "config", {}) or {}).get("tts") or {}).get(
+                    "voice_lang",
+                    "",
+                )
+            ) or "zh"
+            timeline.complete_segment(
+                key,
+                turn_id,
+                ReplySegment(
+                    index=0,
+                    display_text=reply,
+                    voice_text=voice_text,
+                    voice_language=voice_language,
+                    mood=detected,
+                    tts_style=tts_style,
+                ),
+            )
         # 捕获本轮用户消息，记忆操作与 TTS 并行且由上游串行锁保护。
         user_msg = getattr(self, '_last_user_msg', '') or ''
         QTimer.singleShot(
@@ -699,6 +863,13 @@ class PetChatFlowMixin:
         finally:
             set_awaiting_reply_state(self, False)
 
+        timeline = getattr(self, "_conversation_timeline", None)
+        key = getattr(self, "_conversation_key", None)
+        turn_id = str(getattr(self, "_active_timeline_turn_id", "") or "")
+        if timeline is not None and key is not None and turn_id:
+            timeline.finish_turn(key, turn_id)
+        self._active_timeline_turn_id = ""
+
         if wav_path:
             self._play_audio(wav_path)
 
@@ -728,6 +899,12 @@ class PetChatFlowMixin:
             "pet_chat",
             error_summary,
         )
+        timeline = getattr(self, "_conversation_timeline", None)
+        key = getattr(self, "_conversation_key", None)
+        turn_id = str(getattr(self, "_active_timeline_turn_id", "") or "")
+        if timeline is not None and key is not None and turn_id:
+            timeline.fail_turn(key, turn_id, "对话请求失败")
+        self._active_timeline_turn_id = ""
         self.show_reply(
             f"{status_language.chat_error_prefix()}{err}",
             "annoyed",
@@ -741,6 +918,12 @@ class PetChatFlowMixin:
         set_awaiting_reply_state(self, False)
         self._show_bubble(status_language.chat_timeout(), 3000)
         self._position_bubble()
+        timeline = getattr(self, "_conversation_timeline", None)
+        key = getattr(self, "_conversation_key", None)
+        turn_id = str(getattr(self, "_active_timeline_turn_id", "") or "")
+        if timeline is not None and key is not None and turn_id:
+            timeline.fail_turn(key, turn_id, status_language.chat_timeout())
+        self._active_timeline_turn_id = ""
         if hasattr(self, '_chat_worker') and self._chat_worker:
             if self._chat_worker.isRunning():
                 # quit() 协作取消 async 任务 / future
@@ -806,4 +989,8 @@ class PetChatFlowMixin:
             duration_ms = self.config["bubble_duration_ms"]["reply"]
         self._safe_set_mood(mood)
         self._show_bubble(text, max(duration_ms, 3000), mood=mood)
+        self._bind_bubble_to_timeline(
+            getattr(self, "bubble", None),
+            str(getattr(self, "_active_timeline_turn_id", "") or ""),
+        )
         self._position_bubble()

@@ -245,6 +245,12 @@ class PetControlBridgeMixin:
             return None
         bubble = stack.begin_message(text, mood=mood)
         bubbles[index] = bubble
+        binder = getattr(self, "_bind_bubble_to_timeline", None)
+        if callable(binder):
+            binder(
+                bubble,
+                str(getattr(self, "_control_turn_id", "") or ""),
+            )
         position = getattr(self, "_position_bubble", None)
         if callable(position):
             position()
@@ -257,6 +263,7 @@ class PetControlBridgeMixin:
             "bubble_duration_ms"
         ) or {}
         self._control_say_active = True
+        self._control_turn_id = command.queue_id
         self._control_bubbles = {}
         self._control_tts_workers = {}
         self._control_presentation = AgentTurnPresentation(
@@ -271,6 +278,16 @@ class PetControlBridgeMixin:
             done=True,
             source_format="meapet",
         )
+        timeline = getattr(self, "_conversation_timeline", None)
+        key = getattr(self, "_conversation_key", None)
+        if timeline is not None and key is not None:
+            timeline.start_turn(
+                key,
+                command.queue_id,
+                source="agent_proactive",
+            )
+            for segment in result.segments:
+                timeline.complete_segment(key, command.queue_id, segment)
         for segment in result.segments:
             self._apply_control_actions(
                 self._control_presentation.consume(SegmentCompleted(segment))
@@ -329,7 +346,12 @@ class PetControlBridgeMixin:
             )
             return
         if isinstance(action, FinishTurn):
+            timeline = getattr(self, "_conversation_timeline", None)
+            key = getattr(self, "_conversation_key", None)
+            if timeline is not None and key is not None:
+                timeline.finish_turn(key, action.turn_id)
             self._control_say_active = False
+            self._control_turn_id = ""
             self._control_presentation = None
             self._control_tts_workers = {}
             return
@@ -406,7 +428,13 @@ class PetControlBridgeMixin:
 
     def _interrupt_control_say(self) -> None:
         """用户对话优先；忽略仍在后台完成的主动 TTS。"""
+        turn_id = str(getattr(self, "_control_turn_id", "") or "")
+        timeline = getattr(self, "_conversation_timeline", None)
+        key = getattr(self, "_conversation_key", None)
+        if turn_id and timeline is not None and key is not None:
+            timeline.cancel_turn(key, turn_id)
         self._control_say_active = False
+        self._control_turn_id = ""
         self._control_presentation = None
         self._control_tts_workers = {}
 

@@ -217,6 +217,15 @@ class MeaPet(
     def _init_chat(self):
         self.memory = MeaMemory()
         self._schedule_memory_maintenance()
+        from meapet.conversation.timeline import ConversationTimeline
+
+        ui_config = self.config.get("ui") or {}
+        try:
+            timeline_turns = int(ui_config.get("timeline_turns", 5))
+        except (TypeError, ValueError):
+            timeline_turns = 5
+        if not hasattr(self, "_conversation_timeline"):
+            self._conversation_timeline = ConversationTimeline(timeline_turns)
         llm_config = self.config.get("llm") or {}
         mode = str(llm_config.get("mode") or "direct").strip().lower()
         self._agent_history = []
@@ -246,6 +255,7 @@ class MeaPet(
             self.chat_engine = create_engine_from_config(self.config, self.memory)
             if self.chat_engine.backend == "ollama" and self.chat_engine.available:
                 QTimer.singleShot(2000, self._show_warmup_status)
+        self._refresh_conversation_key()
         QTimer.singleShot(1200, self._maybe_show_first_run_hint)
 
     def _apply_motion_preference(self) -> None:

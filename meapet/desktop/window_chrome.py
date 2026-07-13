@@ -410,6 +410,9 @@ class PetWindowChromeMixin:
         reconf_action = QAction("打开配置页…", self)
         reconf_action.triggered.connect(self._reopen_setup_wizard)
         settings_menu.addAction(reconf_action)
+        timeline_action = QAction("对话时间线…", self)
+        timeline_action.triggered.connect(self._show_timeline)
+        settings_menu.addAction(timeline_action)
         settings_menu.addSeparator()
         reset_label = (
             "新建 Agent 会话…"
@@ -442,6 +445,35 @@ class PetWindowChromeMixin:
             self._status_panel.move(self.x() + self.width() + 10, self.y())
         self._status_panel.show()
         self._status_panel.refresh()
+
+    def _show_timeline(self) -> None:
+        timeline = getattr(self, "_conversation_timeline", None)
+        if timeline is None:
+            self._show_bubble("还没有可查看的对话。", 3000, mood=None)
+            return
+        from meapet.desktop.timeline_viewer import TimelineDialog
+
+        dialog = getattr(self, "_timeline_dialog", None)
+        if dialog is None:
+            dialog = TimelineDialog(timeline, self)
+            self._timeline_dialog = dialog
+        dialog.refresh()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _show_timeline_turn(self, turn_id: str) -> None:
+        timeline = getattr(self, "_conversation_timeline", None)
+        turn = timeline.find(turn_id) if timeline is not None else None
+        if turn is None:
+            self._show_bubble("这轮完整回复已不在最近缓存中。", 3500, mood=None)
+            return
+        from meapet.desktop.timeline_viewer import TurnDetailDialog
+
+        dialog = TurnDetailDialog(turn, self)
+        self._timeline_turn_dialog = dialog
+        dialog.show()
+        dialog.raise_()
 
     def _reset_memory(self):
         llm = (getattr(self, "config", {}) or {}).get("llm") or {}

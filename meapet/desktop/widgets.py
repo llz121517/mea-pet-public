@@ -22,6 +22,7 @@ from PyQt5.QtGui import (
 )
 from PyQt5.QtCore import (
     QEasingCurve,
+    QEvent,
     QObject,
     QPoint,
     QPointF,
@@ -340,6 +341,7 @@ class DialogueBox(QWidget):
     """仅承载桌宠回复的自适应语音气泡。"""
 
     dismissed = pyqtSignal()
+    activated = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -397,6 +399,12 @@ class DialogueBox(QWidget):
         self.text_label.setContentsMargins(0, 0, 0, 0)
         self.text_scroll.setWidget(self.text_label)
         container_layout.addWidget(self.text_scroll)
+        for clickable in (
+            self._container,
+            self.text_scroll.viewport(),
+            self.text_label,
+        ):
+            clickable.installEventFilter(self)
 
         self._container.adjustSize()
 
@@ -420,6 +428,19 @@ class DialogueBox(QWidget):
         self._opacity_animation.setEasingCurve(QEasingCurve.OutQuad)
 
         self.hide()
+
+    def eventFilter(self, watched, event):
+        if (
+            event.type() == QEvent.MouseButtonRelease
+            and event.button() == Qt.LeftButton
+        ):
+            self.activated.emit()
+        return super().eventFilter(watched, event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self.activated.emit()
+        super().mouseReleaseEvent(event)
 
     def _get_visual_opacity(self) -> float:
         return self._opacity
