@@ -494,6 +494,25 @@ class TestConfigSafety(unittest.TestCase):
 
 
 class TestRepositoryIgnoreRules(unittest.TestCase):
+    def test_example_config_has_unique_keys_and_timeline_default(self):
+        duplicates = []
+
+        def reject_duplicate_keys(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    duplicates.append(key)
+                result[key] = value
+            return result
+
+        example = json.loads(
+            (ROOT / "config.example.json").read_text(encoding="utf-8"),
+            object_pairs_hook=reject_duplicate_keys,
+        )
+
+        self.assertEqual(duplicates, [])
+        self.assertEqual(example["ui"]["timeline_turns"], 5)
+
     def test_sensitive_runtime_artifacts_are_ignored(self):
         patterns = (ROOT / ".gitignore").read_text(encoding="utf-8")
         for expected in (
