@@ -233,8 +233,10 @@ class TtsGsvMixin:
 
         wav_file, txt_file = _scan(prefixes)
 
-        # 目标语言缺失时回退另一套，避免完全无参考
-        if not wav_file or not txt_file:
+        # 只有旧调用（未显式指定本轮语言）允许跨语言回退。
+        # 新对话协议会传 voice_language，此时宁可跳过语音，
+        # 也不能把中文原文与日语参考音频错配。
+        if (not wav_file or not txt_file) and not voice_language:
             if prefixes[0].startswith("zh") or prefixes[0].startswith("en"):
                 fallback = ("jp_", "ja_")
                 fallback_label = "日文"

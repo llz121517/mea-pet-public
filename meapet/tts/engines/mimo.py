@@ -243,9 +243,10 @@ class TtsMimoMixin:
             if ref_lang and ref_lang != want:
                 log.warn(
                     f"clone_ref 语言={ref_lang} 与 voice_lang={want} 不一致，"
-                    f"仍使用显式路径: {os.path.basename(self.mimo_clone_ref)}"
+                    f"已拒绝跨语言参考: {os.path.basename(self.mimo_clone_ref)}"
                 )
-            return self.mimo_clone_ref
+            else:
+                return self.mimo_clone_ref
 
         candidates = []
 
@@ -316,11 +317,12 @@ class TtsMimoMixin:
             return None
         candidates.sort(key=lambda x: x[0], reverse=True)
         best = candidates[0]
-        if best[0] < 0:
+        if best[2] not in ("?", want):
             log.warn(
                 f"未找到 voice_lang={want} 的 clone 样本，"
-                f"回退 {os.path.basename(best[1])} (lang={best[2]})"
+                "跳过语音，不使用其他语言样本"
             )
+            return None
         else:
             log.info(
                 f"clone 选用与 voice_lang={want} 一致: "
