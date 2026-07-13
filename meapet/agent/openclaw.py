@@ -641,6 +641,16 @@ class OpenClawAdapter:
                 }
                 if self.config.session_id:
                     params["sessionId"] = self.config.session_id
+                if request.attachments:
+                    params["attachments"] = [
+                        {
+                            "type": "image",
+                            "mimeType": attachment.media_type,
+                            "fileName": attachment.file_name,
+                            "content": attachment.data,
+                        }
+                        for attachment in request.attachments
+                    ]
                 await self._send_frame(
                     websocket,
                     {

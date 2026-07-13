@@ -11,7 +11,16 @@ import urllib.request
 from typing import Optional, Dict, Any, List
 
 from PyQt5.QtWidgets import *
-from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject, QSize, QUrl
+from PyQt5.QtCore import (
+    Qt,
+    QSignalBlocker,
+    QTimer,
+    QThread,
+    pyqtSignal,
+    QObject,
+    QSize,
+    QUrl,
+)
 from PyQt5.QtGui import *
 
 from wizard.styles import (
@@ -41,8 +50,8 @@ class VisionPage(QFrame):
         title.setObjectName("PageTitle")
         layout.addWidget(title)
         description = QLabel(
-            "桌宠会定时截屏，决定要不要吐槽。默认关闭（隐私）。\n"
-            "识图后端可与对话不同：例如对话用 MiMo，识图用本地 Ollama。"
+            "桌宠可定时截屏，决定要不要主动说话。默认关闭（隐私）。\n"
+            "可由主回复模型一次读图，或先由独立视觉模型生成观察。"
         )
         description.setObjectName("PageDescription")
         description.setWordWrap(True)
@@ -56,6 +65,21 @@ class VisionPage(QFrame):
         progressive.setObjectName("HelperText")
         progressive.setWordWrap(True)
         layout.addWidget(progressive)
+
+        mode_label = QLabel("视觉链路：")
+        mode_label.setObjectName("FieldLabel")
+        layout.addWidget(mode_label)
+        self.mode_combo = QComboBox()
+        self.mode_combo.setObjectName("VisionMode")
+        self.mode_combo.setAccessibleName("视觉链路模式")
+        self.mode_combo.addItem("关闭截屏/识图", "disabled")
+        self.mode_combo.addItem("继承主回复模型（一次多模态请求）", "inherit")
+        self.mode_combo.addItem("独立视觉模型中转（两次请求）", "relay")
+        self.mode_combo.setToolTip(
+            "继承：截图和提示一起发给主回复模型。\n"
+            "中转：独立视觉模型只输出结构化观察，再交给主回复模型。"
+        )
+        layout.addWidget(self.mode_combo)
         self.advanced_toggle = QCheckBox("显示高级识图选项")
         self.advanced_toggle.setChecked(False)
         self.advanced_toggle.setAccessibleName("显示高级识图选项")
@@ -68,6 +92,17 @@ class VisionPage(QFrame):
         self.advanced_layout.setSpacing(10)
         layout.addWidget(self.advanced_frame)
         self.advanced_frame.setVisible(False)
+
+        self.main_model_vision_cb = QCheckBox(
+            "我已确认主回复模型 / Agent 支持图片输入"
+        )
+        self.main_model_vision_cb.setChecked(False)
+        self.main_model_vision_cb.setAccessibleName("主回复后端支持图片")
+        self.main_model_vision_cb.setToolTip(
+            "预设明确支持视觉时可直接使用；"
+            "自定义模型和 Agent 不会被 MeaPet 假定支持图片。"
+        )
+        self.advanced_layout.addWidget(self.main_model_vision_cb)
 
         self.allow_cloud_cb = QCheckBox("允许云端识图（watcher.allow_cloud，截图会上传）")
         self.allow_cloud_cb.setChecked(False)
@@ -88,9 +123,12 @@ class VisionPage(QFrame):
         self.backend_combo.addItem("跟随对话后端（推荐）", "auto")
         self.backend_combo.addItem("MiMo 云端识图", "mimo")
         self.backend_combo.addItem("Ollama 本地识图", "ollama")
-        self.backend_combo.currentIndexChanged.connect(self._on_backend_changed)
+        self.backend_combo.currentIndexChanged.connect(
+            self._on_relay_backend_selected
+        )
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         self.advanced_toggle.toggled.connect(self._sync_advanced_visibility)
-        self.enable_cb.toggled.connect(self._sync_advanced_visibility)
+        self.enable_cb.toggled.connect(self._on_enable_changed)
         self.advanced_layout.addWidget(self.backend_combo)
 
         self.model_label = QLabel("本地视觉模型：")
@@ -234,10 +272,31 @@ class VisionPage(QFrame):
 
         self._sync_advanced_visibility()
 
+    def _on_mode_changed(self, *_args) -> None:
+        mode = self.mode_combo.currentData() or "disabled"
+        if mode == "disabled" and self.enable_cb.isChecked():
+            self.enable_cb.setChecked(False)
+        self._sync_advanced_visibility()
+        self._on_backend_changed()
+
+    def _on_enable_changed(self, enabled: bool) -> None:
+        if enabled and self.mode_combo.currentData() == "disabled":
+            self.mode_combo.setCurrentIndex(
+                self.mode_combo.findData("inherit")
+            )
+        self._sync_advanced_visibility()
+
+    def _on_relay_backend_selected(self, *_args) -> None:
+        if self.mode_combo.currentData() != "relay":
+            self.mode_combo.setCurrentIndex(self.mode_combo.findData("relay"))
+        self._on_backend_changed()
+
     def _sync_advanced_visibility(self, *_args) -> None:
         """未启用且未展开时隐藏高级识图细节，降低首次配置负担。"""
         show = bool(
-            self.advanced_toggle.isChecked() or self.enable_cb.isChecked()
+            self.advanced_toggle.isChecked()
+            or self.enable_cb.isChecked()
+            or self.mode_combo.currentData() != "disabled"
         )
         self.advanced_frame.setVisible(show)
         if show and hasattr(self, "_on_backend_changed"):
@@ -245,18 +304,33 @@ class VisionPage(QFrame):
             self._on_backend_changed()
 
     def _on_backend_changed(self, *_args):
+        vision_mode = self.mode_combo.currentData() or "disabled"
+        is_relay = vision_mode == "relay"
+        is_inherit = vision_mode == "inherit"
         data = self.backend_combo.currentData()
         is_ollama = data == "ollama"
         is_mimo = data == "mimo"
         is_auto = data == "auto"
         # 本地模型控件
-        self.model_label.setVisible(is_ollama or is_auto)
-        self.model_combo.setVisible(is_ollama or is_auto)
-        self.host_label.setVisible(is_ollama)
-        self.host_input.setVisible(is_ollama)
+        self.main_model_vision_cb.setVisible(is_inherit)
+        self.backend_label.setVisible(is_relay)
+        self.backend_combo.setVisible(is_relay)
+        self.model_label.setVisible(is_relay and (is_ollama or is_auto))
+        self.model_combo.setVisible(is_relay and (is_ollama or is_auto))
+        self.host_label.setVisible(is_relay and is_ollama)
+        self.host_input.setVisible(is_relay and is_ollama)
         # 云端 key
-        self.cloud_box.setVisible(is_mimo or is_auto)
-        if is_mimo:
+        self.cloud_box.setVisible(is_relay and (is_mimo or is_auto))
+        if is_inherit:
+            set_status(
+                self.hint,
+                "warning" if not self.main_model_vision_cb.isChecked() else "muted",
+                "继承模式只发一次主回复请求；"
+                "若后端不支持图片，会直接报错，不会暗中改走中转。",
+            )
+        elif vision_mode == "disabled":
+            set_status(self.hint, "muted", "截屏与识图已关闭。")
+        elif is_mimo:
             set_status(
                 self.hint,
                 "warning",
@@ -286,6 +360,19 @@ class VisionPage(QFrame):
         self.enable_cb.setChecked(bool(watcher_cfg.get("enabled", False)))
         self.allow_cloud_cb.setChecked(bool(watcher_cfg.get("allow_cloud", False)))
 
+        raw_mode = str(vision_cfg.get("mode") or "").strip().lower()
+        if raw_mode not in {"disabled", "inherit", "relay"}:
+            raw_mode = (
+                "relay"
+                if bool(vision_cfg.get("enabled") or watcher_cfg.get("enabled"))
+                else "disabled"
+            )
+        mode_index = self.mode_combo.findData(raw_mode)
+        self.mode_combo.setCurrentIndex(mode_index if mode_index >= 0 else 0)
+        self.main_model_vision_cb.setChecked(
+            bool(vision_cfg.get("main_model_supports_images", False))
+        )
+
         backend = (vision_cfg.get("backend") or "").strip().lower()
         if not backend:
             idx = 0  # auto
@@ -293,7 +380,9 @@ class VisionPage(QFrame):
             idx = 1
         else:
             idx = 2
+        blocker = QSignalBlocker(self.backend_combo)
         self.backend_combo.setCurrentIndex(idx)
+        del blocker
 
         model = vision_cfg.get("model") or "qwen3.5:4b"
         for i in range(self.model_combo.count()):
@@ -344,9 +433,11 @@ class VisionPage(QFrame):
         )
         self._on_capture_scope_changed()
         self._sync_advanced_visibility()
+        self._on_backend_changed()
 
     def collect(self, llm_backend: str, llm_cfg: dict) -> dict:
         """返回 vision + watcher 片段。"""
+        vision_mode = self.mode_combo.currentData() or "disabled"
         mode = self.backend_combo.currentData() or "auto"
         if mode == "auto":
             inherited_backend = (llm_backend or "ollama").lower()
@@ -370,8 +461,12 @@ class VisionPage(QFrame):
             max_m = max(min_m, 6)
 
         vision = {
-            "enabled": self.enable_cb.isChecked(),
-            "backend": vision_backend_field,
+            "enabled": vision_mode != "disabled",
+            "mode": vision_mode,
+            "main_model_supports_images": bool(
+                self.main_model_vision_cb.isChecked()
+            ),
+            "backend": vision_backend_field if vision_mode == "relay" else "",
             "model": self.model_combo.currentData() or "qwen3.5:4b",
             "host": self.host_input.text().strip(),
             "api_key": self.api_key_input.text().strip(),
@@ -411,7 +506,9 @@ class VisionPage(QFrame):
             capture_application = self.capture_application_input.text().strip()
 
         watcher = {
-            "enabled": self.enable_cb.isChecked(),
+            "enabled": bool(
+                self.enable_cb.isChecked() and vision_mode != "disabled"
+            ),
             "allow_cloud": self.allow_cloud_cb.isChecked(),
             "require_confirm": True,
             "confirm_once_session": False,

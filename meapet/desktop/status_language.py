@@ -37,6 +37,16 @@ def cloud_vision_disabled() -> str:
     return "云端识图未授权：请在配置页允许云端识图"
 
 
+def vision_mode_unavailable(reason: str = "") -> str:
+    if reason == "main_model_vision_not_confirmed":
+        return "主回复模型未确认支持图片，请选择独立视觉中转或关闭"
+    if reason == "agent_relay_forbidden":
+        return "Agent 模式不使用额外视觉模型，请改为由 Agent 读图"
+    if reason == "relay_backend_not_configured":
+        return "独立视觉中转尚未配置后端"
+    return "当前识图配置不可用"
+
+
 def standby_on() -> str:
     return "梅尔待机中…右键可取消"
 

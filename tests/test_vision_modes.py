@@ -257,6 +257,71 @@ class TestVisionCoordinator(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(reply.silent)
         self.assertEqual(reply.segments, ())
 
+    async def test_typed_main_backend_failures_and_invalid_inputs_are_preserved(self):
+        from meapet.agent.base import (
+            ImageAttachment,
+            TurnCancelled,
+            TurnFailed,
+        )
+        from meapet.vision.coordinator import VisionCoordinator, VisionTurnError
+
+        with self.assertRaises(ValueError):
+            VisionCoordinator(object())
+
+        class FailedAdapter:
+            async def stream_turn(self, request):
+                yield TurnFailed(
+                    request.turn_id,
+                    "rate_limit",
+                    "模型请求过于频繁。",
+                    True,
+                )
+
+        with self.assertRaises(VisionTurnError) as failed:
+            await VisionCoordinator(FailedAdapter()).inherit(
+                ImageAttachment("image/jpeg", "YWJj"),
+                idle_minutes=0,
+                frontend_context={},
+                tts_enabled=False,
+            )
+        self.assertEqual(failed.exception.category, "rate_limit")
+        self.assertTrue(failed.exception.retryable)
+
+        class CancelledAdapter:
+            async def stream_turn(self, request):
+                yield TurnCancelled(request.turn_id)
+
+        with self.assertRaises(VisionTurnError) as cancelled:
+            await VisionCoordinator(CancelledAdapter()).inherit(
+                ImageAttachment("image/jpeg", "YWJj"),
+                idle_minutes=0,
+                frontend_context={},
+                tts_enabled=False,
+            )
+        self.assertEqual(cancelled.exception.category, "cancelled")
+
+        class EmptyAdapter:
+            async def stream_turn(self, _request):
+                if False:
+                    yield None
+
+        with self.assertRaises(VisionTurnError) as empty:
+            await VisionCoordinator(EmptyAdapter()).inherit(
+                ImageAttachment("image/jpeg", "YWJj"),
+                idle_minutes=0,
+                frontend_context={},
+                tts_enabled=False,
+            )
+        self.assertEqual(empty.exception.category, "protocol")
+
+        with self.assertRaises(ValueError):
+            await VisionCoordinator(EmptyAdapter()).relay(
+                None,
+                idle_minutes=0,
+                frontend_context={},
+                tts_enabled=False,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -46,6 +46,8 @@
   },
   "vision": {
     "enabled": false,
+    "mode": "disabled",
+    "main_model_supports_images": false,
     "backend": "",
     "model": "qwen3.5:4b",
     "host": "",

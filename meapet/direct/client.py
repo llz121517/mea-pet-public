@@ -154,13 +154,114 @@ def _message_list(request: CanonicalChatRequest) -> list[dict[str, object]]:
     return [dict(message) for message in request.messages]
 
 
+def _data_url(part: Mapping[str, object]) -> str:
+    return (
+        f"data:{part.get('media_type')};base64,{part.get('data')}"
+    )
+
+
+def _openai_messages(
+    request: CanonicalChatRequest,
+) -> list[dict[str, object]]:
+    messages = []
+    for message in request.messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            messages.append(dict(message))
+            continue
+        rendered = []
+        for part in content:
+            if part.get("type") == "text":
+                rendered.append({"type": "text", "text": part.get("text", "")})
+            else:
+                rendered.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": _data_url(part)},
+                    }
+                )
+        messages.append({"role": message.get("role"), "content": rendered})
+    return messages
+
+
+def _ollama_messages(
+    request: CanonicalChatRequest,
+) -> list[dict[str, object]]:
+    messages = []
+    for message in request.messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            messages.append(dict(message))
+            continue
+        text_parts = [
+            str(part.get("text") or "")
+            for part in content
+            if part.get("type") == "text"
+        ]
+        images = [
+            str(part.get("data") or "")
+            for part in content
+            if part.get("type") == "image"
+        ]
+        rendered: dict[str, object] = {
+            "role": message.get("role"),
+            "content": "\n".join(text_parts),
+        }
+        if images:
+            rendered["images"] = images
+        messages.append(rendered)
+    return messages
+
+
+def _responses_input(
+    request: CanonicalChatRequest,
+) -> list[dict[str, object]]:
+    messages = []
+    for message in request.messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            messages.append(dict(message))
+            continue
+        rendered = []
+        for part in content:
+            if part.get("type") == "text":
+                rendered.append(
+                    {"type": "input_text", "text": part.get("text", "")}
+                )
+            else:
+                rendered.append(
+                    {"type": "input_image", "image_url": _data_url(part)}
+                )
+        messages.append({"role": message.get("role"), "content": rendered})
+    return messages
+
+
+def _anthropic_content(parts: list[Mapping[str, object]]) -> list[dict[str, object]]:
+    rendered = []
+    for part in parts:
+        if part.get("type") == "text":
+            rendered.append({"type": "text", "text": part.get("text", "")})
+        else:
+            rendered.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": part.get("media_type"),
+                        "data": part.get("data"),
+                    },
+                }
+            )
+    return rendered
+
+
 def _openai_chat_spec(
     config: DirectProtocolConfig,
     request: CanonicalChatRequest,
 ) -> _RequestSpec:
     body: dict[str, object] = {
         "model": request.model,
-        "messages": _message_list(request),
+        "messages": _openai_messages(request),
         "temperature": request.temperature,
         "max_tokens": request.max_tokens,
         "stream": request.stream,
@@ -186,7 +287,7 @@ def _ollama_spec(
 ) -> _RequestSpec:
     body: dict[str, object] = {
         "model": request.model,
-        "messages": _message_list(request),
+        "messages": _ollama_messages(request),
         "stream": request.stream,
         "keep_alive": "30s",
         "think": False,
@@ -218,7 +319,7 @@ def _responses_spec(
 ) -> _RequestSpec:
     body: dict[str, object] = {
         "model": request.model,
-        "input": _message_list(request),
+        "input": _responses_input(request),
         "temperature": request.temperature,
         "max_output_tokens": request.max_tokens,
         "stream": request.stream,
@@ -250,7 +351,10 @@ def _anthropic_spec(
             if isinstance(content, str) and content.strip():
                 system_parts.append(content.strip())
             continue
-        messages.append(dict(message))
+        rendered = dict(message)
+        if isinstance(rendered.get("content"), list):
+            rendered["content"] = _anthropic_content(rendered["content"])
+        messages.append(rendered)
     body: dict[str, object] = {
         "model": request.model,
         "system": "\n\n".join(system_parts),

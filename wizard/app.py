@@ -461,6 +461,29 @@ class SetupWizard(QWidget):
                 issues[self.TAB_VOICE].append("MiMo TTS API Key")
 
         if self.vision_page.enable_cb.isChecked():
+            vision_mode = self.vision_page.mode_combo.currentData() or "disabled"
+            conversation_mode = self.backend_page.mode()
+            if vision_mode == "disabled":
+                issues[self.TAB_VISION].append("视觉链路模式")
+                return issues
+            if vision_mode == "inherit":
+                if not self.vision_page.main_model_vision_cb.isChecked():
+                    issues[self.TAB_VISION].append("主回复后端图片能力确认")
+                if conversation_mode == "agent":
+                    endpoint = self.backend_page.agent_base_url.text().strip()
+                else:
+                    endpoint = self.llm_page.endpoint_input.text().strip()
+                from meapet.utils import is_loopback_url
+                if (
+                    endpoint
+                    and not is_loopback_url(endpoint)
+                    and not self.vision_page.allow_cloud_cb.isChecked()
+                ):
+                    issues[self.TAB_VISION].append("云端识图授权")
+                return issues
+            if conversation_mode == "agent":
+                issues[self.TAB_VISION].append("Agent 模式须由 Agent 直接读图")
+                return issues
             selected_backend = self.vision_page.backend_combo.currentData() or "auto"
             actual_backend = selected_backend
             if selected_backend == "auto":
@@ -876,6 +899,17 @@ class SetupWizard(QWidget):
                     )
 
         self._collect_conversation_fields(config)
+        # 视觉路由需要看到最终 direct/agent 结构，因此在后端字段落定后重新收集。
+        try:
+            final_llm = config.get("llm", {}) or {}
+            vw = self.vision_page.collect(
+                str(final_llm.get("backend") or b),
+                final_llm,
+            )
+            config["vision"] = vw["vision"]
+            config["watcher"] = vw["watcher"]
+        except Exception as exc:
+            self.env_page.log(f"收集视觉路由失败: {type(exc).__name__}")
         return config
 
     def _collect_conversation_fields(self, config: dict) -> None:

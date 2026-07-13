@@ -5,6 +5,41 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Mapping, Tuple
 
+from meapet.agent.base import ImageAttachment
+
+
+def _normalize_content_parts(
+    parts: list[object],
+    *,
+    role: str,
+) -> list[dict[str, object]]:
+    normalized: list[dict[str, object]] = []
+    for part in parts:
+        if not isinstance(part, Mapping):
+            raise ValueError("content parts must be mappings")
+        part_type = str(part.get("type") or "").strip().lower()
+        if part_type == "text":
+            text = str(part.get("text") or "")
+            if not text:
+                raise ValueError("text content part is empty")
+            normalized.append({"type": "text", "text": text})
+            continue
+        if part_type != "image":
+            raise ValueError("image content parts must use canonical image data")
+        if role != "user":
+            raise ValueError("image content is only allowed in user messages")
+        try:
+            attachment = ImageAttachment(
+                media_type=str(part.get("media_type") or ""),
+                data=str(part.get("data") or ""),
+            )
+        except ValueError as exc:
+            raise ValueError(f"image content part is invalid: {exc}") from exc
+        normalized.append(attachment.canonical_part())
+    if not normalized:
+        raise ValueError("message content parts are empty")
+    return normalized
+
 
 @dataclass(frozen=True)
 class CanonicalChatRequest:
@@ -42,7 +77,15 @@ class CanonicalChatRequest:
                 raise ValueError("message role is unsupported")
             if not isinstance(content, (str, list)):
                 raise ValueError("message content must be text or content parts")
-            normalized_messages.append({"role": role, "content": content})
+            normalized_content: object = content
+            if isinstance(content, list):
+                normalized_content = _normalize_content_parts(
+                    content,
+                    role=role,
+                )
+            normalized_messages.append(
+                {"role": role, "content": normalized_content}
+            )
         if not normalized_messages:
             raise ValueError("messages are required")
         object.__setattr__(self, "model", model)

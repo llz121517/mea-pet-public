@@ -26,6 +26,7 @@ from meapet.config.normalizers import (
 )
 from meapet.ui_theme import normalize_ui_font_scale
 from meapet.utils import mask_secret, normalize_watcher
+from meapet.vision.policy import normalize_vision_mode
 
 
 # backend / 字段 → 候选环境变量（按顺序）
@@ -578,6 +579,28 @@ def normalize_config(config: dict) -> dict:
         "region": normalized_region if scope == "region" else None,
         "application": application if scope == "application" else "",
     }
+
+    vision = (
+        copy.deepcopy(cfg.get("vision"))
+        if isinstance(cfg.get("vision"), dict)
+        else {}
+    )
+    if "mode" in vision:
+        vision_mode = normalize_vision_mode(vision.get("mode"))
+    else:
+        # 旧 watcher 会独立调用视觉模型，因此只能忠实迁移为 relay。
+        legacy_enabled = bool(
+            vision.get("enabled", watcher_out.get("enabled", False))
+        )
+        vision_mode = "relay" if legacy_enabled else "disabled"
+    vision["mode"] = vision_mode
+    vision["enabled"] = vision_mode != "disabled"
+    vision["main_model_supports_images"] = bool(
+        vision.get("main_model_supports_images", False)
+    )
+    if vision_mode == "disabled":
+        watcher_out["enabled"] = False
+    cfg["vision"] = vision
     cfg["watcher"] = watcher_out
     # 保留旧 watcher_interval 和未知字段，避免规范化时删除用户配置。
     return cfg

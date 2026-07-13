@@ -262,7 +262,7 @@ class HermesAdapter:
             session_key_header=str(payload.get("session_key_header") or ""),
         )
 
-    def _messages(self, request: AgentTurnRequest) -> list[dict[str, str]]:
+    def _messages(self, request: AgentTurnRequest) -> list[dict[str, object]]:
         messages = [
             {
                 "role": "system",
@@ -286,7 +286,25 @@ class HermesAdapter:
         else:
             history = []
         messages.extend(history)
-        messages.append({"role": "user", "content": request.user_text})
+        if request.attachments:
+            content: list[dict[str, object]] = [
+                {"type": "text", "text": request.user_text}
+            ]
+            content.extend(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": (
+                            f"data:{attachment.media_type};base64,"
+                            f"{attachment.data}"
+                        )
+                    },
+                }
+                for attachment in request.attachments
+            )
+            messages.append({"role": "user", "content": content})
+        else:
+            messages.append({"role": "user", "content": request.user_text})
         return messages
 
     async def cancel(self, turn_id: str) -> None:

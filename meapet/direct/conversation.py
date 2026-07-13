@@ -108,6 +108,17 @@ class DirectConversationAdapter:
         try:
             messages = self.engine._prepare_direct_turn(request.user_text)
             prepared = True
+            if request.attachments:
+                messages[-1] = {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": request.user_text},
+                        *(
+                            attachment.canonical_part()
+                            for attachment in request.attachments
+                        ),
+                    ],
+                }
             system = str(messages[0].get("content") or "")
             messages[0] = {
                 "role": "system",

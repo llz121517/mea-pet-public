@@ -309,6 +309,7 @@ class MeaPet(
         vision_cfg = self.config.get("vision", {}) or {}
         watcher_cfg = self.config.get("watcher", {}) or {}
         capture_cfg = watcher_cfg.get("capture") or {}
+        vision_mode = str(vision_cfg.get("mode") or "disabled").strip().lower()
 
         backend = resolve_vision_backend(vision_cfg, llm_cfg)
         vision_model = vision_cfg.get("model") or (
@@ -338,7 +339,7 @@ class MeaPet(
         ollama_host = resolve_vision_host(vision_cfg, llm_cfg)
 
         log.info(
-            f"[watcher] 视觉后端配置: backend={backend} "
+            f"[watcher] 视觉路由: mode={vision_mode} backend={backend} "
             f"model={vision_model if backend != 'mimo' else mimo_model} "
             f"allow_cloud={self.config.get('watcher', {}).get('allow_cloud', False)}"
         )
@@ -350,6 +351,7 @@ class MeaPet(
             api_base=api_base,
             api_key=api_key,
             mimo_model=mimo_model,
+            mode=vision_mode,
             capture_scope=capture_cfg.get("scope", "full_screen"),
             capture_region=capture_cfg.get("region"),
             capture_application=capture_cfg.get("application", ""),
