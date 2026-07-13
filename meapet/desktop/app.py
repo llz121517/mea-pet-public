@@ -8,7 +8,7 @@ import os
 import sys
 import time
 import socket  # must import before PyQt (QtNetwork hook)
-from ..log import get_color_logger
+from meapet.log import get_color_logger
 
 log = get_color_logger("app")
 
@@ -511,13 +511,13 @@ def main():
                 # 几何位置已在构造阶段确定，这里只显现，不再二次定位。
                 pet2.show()
                 pet2.raise_()
-                _log(
+                log.debug(
                     f"renderer ready size={pet2.width()}x{pet2.height()} "
                     f"@({pet2.x()},{pet2.y()}) vis={pet2.isVisible()} "
                     f"opacity={pet2.windowOpacity():.2f} mapping=continuous"
                 )
             except Exception as exc:
-                _log(f"renderer reveal failed: {exc}")
+                log.error(f"渲染器显示失败: {exc}")
         QTimer.singleShot(600, _greet)
 
     if hasattr(pet, "when_renderer_ready"):
