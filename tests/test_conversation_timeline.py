@@ -190,6 +190,52 @@ class TestConversationOrchestrator(unittest.TestCase):
         self.assertTrue(orchestrator.accepts(new_turn))
         self.assertEqual(new_turn.conversation_key, second)
 
+    def test_same_key_keeps_generation_but_new_turn_replaces_old_turn(self):
+        from meapet.conversation.orchestrator import ConversationOrchestrator
+        from meapet.conversation.timeline import ConversationKey
+
+        key = ConversationKey("direct", "ollama", "local")
+        orchestrator = ConversationOrchestrator(key)
+        first = orchestrator.begin_turn("first")
+        generation = orchestrator.activate(key)
+        second = orchestrator.begin_turn("second")
+
+        self.assertEqual(generation, first.generation_id)
+        self.assertEqual(orchestrator.conversation_key, key)
+        self.assertEqual(orchestrator.generation_id, generation)
+        self.assertFalse(orchestrator.accepts(first))
+        self.assertTrue(orchestrator.accepts(second))
+        self.assertTrue(orchestrator.complete(second))
+        self.assertFalse(orchestrator.accepts(second))
+        self.assertFalse(orchestrator.complete(second))
+
+    def test_invalidate_and_invalid_context_inputs_are_rejected(self):
+        from meapet.conversation.orchestrator import (
+            ConversationOrchestrator,
+            TurnContext,
+        )
+        from meapet.conversation.timeline import ConversationKey
+
+        key = ConversationKey("agent", "openclaw", "session")
+        orchestrator = ConversationOrchestrator(key)
+        context = orchestrator.begin_turn("turn")
+        invalidated_generation = orchestrator.invalidate()
+
+        self.assertGreater(invalidated_generation, context.generation_id)
+        self.assertFalse(orchestrator.accepts(context))
+        self.assertFalse(orchestrator.accepts(None))
+        with self.assertRaises(TypeError):
+            ConversationOrchestrator("not-a-key")
+        with self.assertRaises(TypeError):
+            orchestrator.activate("not-a-key")
+        for values in (
+            {"conversation_key": key, "turn_id": "", "generation_id": 1},
+            {"conversation_key": key, "turn_id": "bad\nturn", "generation_id": 1},
+            {"conversation_key": key, "turn_id": "turn", "generation_id": 0},
+        ):
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                TurnContext(**values)
+
 
 class TestTimelineViewer(unittest.TestCase):
     @classmethod
