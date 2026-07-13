@@ -109,6 +109,12 @@ class PetChatFlowMixin:
         elif result:
             reply, mood = result
             self._on_chat_done(reply, mood)
+        else:
+            # result 和 error 都为空（异常路径未捕获到）→ 释放锁，防止死锁
+            safe_print("[pet] _poll_chat: 空结果，释放对话锁")
+            self._awaiting_reply = False
+            if hasattr(self, '_chat_timeout') and self._chat_timeout:
+                self._chat_timeout.stop()
 
     def _do_memory_ops(self, reply: str, mood: str):
         """记忆操作放后台线程执行，不阻塞主线程"""
@@ -208,17 +214,15 @@ class PetChatFlowMixin:
         if hasattr(self, '_watch_tts_worker') and self._watch_tts_worker and self._watch_tts_worker.done:
             result = self._watch_tts_worker.get_result()
             self._watch_tts_worker = None
-            # 把 _pending_reply 的数据取出来，传给回调，不要在回调前删除
+            # 取走 _pending_reply 后立即删除，避免回调内部二次读取
             pending = getattr(self, '_pending_reply', None)
             if pending:
                 reply, mood = pending
-                self._on_watch_tts_and_show(result, reply, mood)  # 改为传参
+                if hasattr(self, '_pending_reply'):
+                    del self._pending_reply
+                self._on_watch_tts_and_show(result, reply, mood)
             else:
                 self._on_watch_tts_and_show(result, None, None)
-            # 清理 _pending_reply 放到回调之后
-            if hasattr(self, '_pending_reply'):
-                reply, mood = self._pending_reply
-                del self._pending_reply
 
                 
         # 没有待处理的 worker 就停止

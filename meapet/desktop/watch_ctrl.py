@@ -191,14 +191,7 @@ class PetWatcherMixin:
             
         """屏幕吐槽：语音合成完成 → 显示文字 + 播放"""
         wav_path = raw.rsplit("|", 1)[0] if "|" in raw else raw
-        if hasattr(self, '_pending_reply'):
-            reply, mood = self._pending_reply
-            del self._pending_reply
-        else:
-            log_error("watch_tts", "_pending_reply missing")
-            self._awaiting_reply = False
-            self._start_watcher_timer()
-            return
+        # reply/mood 由调用方 _poll_tts 直接传入，不再从 _pending_reply 重复读取
         audio_duration_ms = self._get_wav_duration_ms(wav_path) if wav_path else 0
         bubble_ms = self.config["bubble_duration_ms"]["watch"]
         if self.config["tts"]["sync_with_audio"]:

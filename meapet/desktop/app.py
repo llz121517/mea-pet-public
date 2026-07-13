@@ -342,10 +342,18 @@ class MeaPet(
     def mouseDoubleClickEvent(self, event):
         self._start_chat()
 
+    def showEvent(self, event):
+        """窗口显示时恢复空闲动画等后台定时器"""
+        super().showEvent(event)
+        if hasattr(self, '_idle_timer') and self._idle_timer and not self._idle_timer.isActive():
+            self._idle_timer.start(20000)
+
     def closeEvent(self, event):
         # 桌宠是常驻悬浮窗：系统/误触关闭只隐藏，真正退出走右键「退出」
         log.info("[pet] 关闭事件触发 -> 隐藏窗口（使用托盘或右键菜单退出）")
         event.ignore()
+        if hasattr(self, '_idle_timer') and self._idle_timer:
+            self._idle_timer.stop()
         self.hide()
 
 
