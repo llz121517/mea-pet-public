@@ -330,6 +330,14 @@ class ConversationTimeline:
                 for state in self._turns.get(key, {}).values()
             )
 
+    def clear(self, key: ConversationKey | None = None) -> None:
+        """只清内存投影；持久层由调用方按其数据语义处理。"""
+        with self._lock:
+            if key is None:
+                self._turns.clear()
+            else:
+                self._turns.pop(key, None)
+
     def all_recent(self) -> tuple[TurnTranscript, ...]:
         with self._lock:
             turns = [

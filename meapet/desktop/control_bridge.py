@@ -281,6 +281,8 @@ class PetControlBridgeMixin:
         return bubble
 
     def _start_control_say(self, command) -> None:
+        from meapet.desktop.renderer import MOOD_TO_EXPRESSION
+
         tts = getattr(self, "tts", None)
         tts_enabled = bool(tts is not None and getattr(tts, "enabled", False))
         bubble_config = (getattr(self, "config", {}) or {}).get(
@@ -295,6 +297,7 @@ class PetControlBridgeMixin:
             reply_min_duration_ms=_bounded_int(
                 bubble_config.get("reply"), 3000, 0, 300_000
             ),
+            supported_moods=tuple(MOOD_TO_EXPRESSION),
         )
         result = ParseResult(
             segments=tuple(command.segments),

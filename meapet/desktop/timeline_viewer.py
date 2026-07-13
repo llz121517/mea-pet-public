@@ -30,6 +30,18 @@ _SOURCE_NAMES = {
 }
 
 
+def conversation_label(turn: TurnTranscript) -> str:
+    key = turn.conversation_key
+    mode = "Agent" if key.mode == "agent" else "直连"
+    profile = key.profile_id[:48]
+    if key.mode != "agent":
+        return f"{mode} · {profile}"
+    session = key.session_id
+    if len(session) > 32:
+        session = f"{session[:18]}…{session[-8:]}"
+    return f"{mode} · {profile} · {session}"
+
+
 def render_turn_text(turn: TurnTranscript) -> str:
     lines = []
     if turn.user_text:
@@ -67,12 +79,13 @@ class TurnDetailDialog(QDialog):
         title = QLabel("本轮完整回复")
         title.setObjectName("PageTitle")
         layout.addWidget(title)
-        meta = QLabel(
+        self.meta = QLabel(
+            f"{conversation_label(turn)} · "
             f"{_SOURCE_NAMES.get(turn.source, turn.source)} · "
             f"{datetime.fromtimestamp(turn.created_at).strftime('%Y-%m-%d %H:%M:%S')}"
         )
-        meta.setObjectName("HelperText")
-        layout.addWidget(meta)
+        self.meta.setObjectName("HelperText")
+        layout.addWidget(self.meta)
 
         self.content = QPlainTextEdit()
         self.content.setReadOnly(True)
@@ -153,6 +166,7 @@ class TimelineDialog(QDialog):
         for turn in turns:
             preview = turn.display_text or turn.error_text or "状态更新"
             label = (
+                f"{conversation_label(turn)} · "
                 f"{_SOURCE_NAMES.get(turn.source, turn.source)} · "
                 f"{datetime.fromtimestamp(turn.created_at).strftime('%H:%M:%S')}\n"
                 f"{preview[:100]}"

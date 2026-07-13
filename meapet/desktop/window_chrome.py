@@ -503,6 +503,13 @@ class PetWindowChromeMixin:
         )
         if reply == QMessageBox.Yes:
             self.memory.reset_all()
+            timeline = getattr(self, "_conversation_timeline", None)
+            if timeline is not None:
+                timeline.clear()
+            engine = getattr(self, "chat_engine", None)
+            clear_history = getattr(engine, "clear_history", None)
+            if callable(clear_history):
+                clear_history()
             self._show_bubble(
                 "-什么都没发生喵。" if random.random() < 0.1 else "……你是谁喵？",
                 3000,

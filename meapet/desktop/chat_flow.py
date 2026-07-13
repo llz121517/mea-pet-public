@@ -345,9 +345,12 @@ class PetChatFlowMixin:
         self._agent_bubbles = {}
         self._agent_tts_workers = {}
         self._timeline_segment_texts = {}
+        from meapet.desktop.renderer import MOOD_TO_EXPRESSION
+
         self._agent_presentation = AgentTurnPresentation(
             tts_enabled=tts_enabled,
             reply_min_duration_ms=int(bubble_config.get("reply", 3000)),
+            supported_moods=tuple(MOOD_TO_EXPRESSION),
         )
         request = AgentTurnRequest(
             turn_id=turn_id,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from meapet.agent.base import (
     FormatRepairRequired,
@@ -85,9 +85,15 @@ class AgentTurnPresentation:
         *,
         tts_enabled: bool,
         reply_min_duration_ms: int = 3000,
+        supported_moods: tuple[str, ...] = (),
     ) -> None:
         self.tts_enabled = bool(tts_enabled)
         self.reply_min_duration_ms = max(0, int(reply_min_duration_ms))
+        self.supported_moods = frozenset(
+            str(mood or "").strip().lower()
+            for mood in supported_moods
+            if str(mood or "").strip()
+        )
         self._texts: dict[int, str] = {}
         self._begun: set[int] = set()
         self._segments: dict[int, ReplySegment] = {}
@@ -122,6 +128,8 @@ class AgentTurnPresentation:
             return tuple(actions)
         if isinstance(event, SegmentCompleted):
             segment = event.segment
+            if self.supported_moods and segment.mood not in self.supported_moods:
+                segment = replace(segment, mood="neutral")
             self._segments[segment.index] = segment
             self._texts[segment.index] = segment.display_text
             if not self.tts_enabled:
