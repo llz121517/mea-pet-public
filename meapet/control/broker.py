@@ -94,6 +94,7 @@ class CompanionControlBroker:
         *,
         state: dict | None = None,
         max_say_queue: int = 8,
+        max_expression_dedupe: int = 1024,
         say_ttl_seconds: float = 120.0,
         capture_timeout_seconds: float = 60.0,
         clock: Callable[[], float] = time.monotonic,
@@ -102,6 +103,10 @@ class CompanionControlBroker:
         self._clock = clock
         self._state = _public_state(state)
         self._max_say_queue = max(1, min(int(max_say_queue), 100))
+        self._max_expression_dedupe = max(
+            1,
+            min(int(max_expression_dedupe), 10_000),
+        )
         self._say_ttl_seconds = max(1.0, float(say_ttl_seconds))
         self._capture_timeout_seconds = max(
             0.05,
@@ -254,6 +259,9 @@ class CompanionControlBroker:
                     "field": "motion",
                     "value": motion,
                 }
+            while len(self._expression_dedupe) >= self._max_expression_dedupe:
+                oldest_request_id = next(iter(self._expression_dedupe))
+                self._expression_dedupe.pop(oldest_request_id, None)
             self._expressions.append(ExpressionCommand(safe_id, mood, motion))
             result = {"status": "queued", "duplicate": False}
             self._expression_dedupe[safe_id] = dict(result)

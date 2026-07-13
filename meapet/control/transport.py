@@ -83,6 +83,10 @@ class ControlServerConfig:
         ca = _existing_file(self.ca_file, "CA")
         if bool(cert) != bool(key):
             raise ValueError("certificate and private key must be configured together")
+        if ca and not cert:
+            raise ValueError(
+                "client CA requires a server certificate and private key"
+            )
         if not cert and not listen_ip.is_loopback and not self.allow_insecure_http:
             raise ValueError(
                 "LAN HTTP is disabled; configure TLS or explicitly allow insecure HTTP"
