@@ -68,6 +68,45 @@ class TestDirectProtocolConfig(unittest.TestCase):
                 base_url="https://models.example.test/v1",
             )
 
+    def test_canonical_request_validates_model_limits_roles_and_content(self):
+        from meapet.direct.types import CanonicalChatRequest
+
+        base = {
+            "model": "m",
+            "messages": ({"role": "user", "content": "hi"},),
+        }
+        invalid = (
+            ({**base, "model": ""}, "model"),
+            ({**base, "temperature": "bad"}, "temperature"),
+            ({**base, "temperature": 3}, "temperature"),
+            ({**base, "max_tokens": "bad"}, "max_tokens"),
+            ({**base, "max_tokens": 0}, "max_tokens"),
+            ({**base, "messages": ()}, "messages"),
+            ({**base, "messages": ("not-a-message",)}, "mappings"),
+            (
+                {**base, "messages": ({"role": "tool", "content": "x"},)},
+                "role",
+            ),
+            (
+                {**base, "messages": ({"role": "user", "content": 7},)},
+                "content",
+            ),
+        )
+        for values, pattern in invalid:
+            with self.subTest(pattern=pattern), self.assertRaisesRegex(
+                ValueError,
+                pattern,
+            ):
+                CanonicalChatRequest(**values)
+
+        request = CanonicalChatRequest(
+            **base,
+            response_format={"type": "json_object"},
+            extra={"seed": 7},
+        )
+        self.assertEqual(request.response_format, {"type": "json_object"})
+        self.assertEqual(request.extra, {"seed": 7})
+
 
 class TestDirectProtocolClient(unittest.IsolatedAsyncioTestCase):
     async def _collect(self, protocol, handler, *, base_url, api_key="secret"):
