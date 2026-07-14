@@ -14,7 +14,10 @@ from meapet.utils import (
     is_loopback_url,
 )
 from meapet.desktop.workers import TTSWorker
-from meapet.desktop.dialogs import confirm_cloud_vision
+from meapet.desktop.dialogs import (
+    confirm_cloud_capture_scope,
+    confirm_cloud_vision,
+)
 from meapet.config.store import (
     resolve_vision_api_base,
     resolve_vision_backend,
@@ -154,10 +157,7 @@ class PetWatcherMixin:
         print(f"[DEBUG watch_ctrl] _confirm_cloud_capture: showing confirm dialog", file=sys.stderr, flush=True)
         allowed = confirm_cloud_vision(
             self,
-            title="允许本次云端识图？",
-            message=msg,
             timeout_seconds=5,
-            accept_text="允许本次上传",
         )
         print(f"[DEBUG watch_ctrl] _confirm_cloud_capture: user response={allowed}", file=sys.stderr, flush=True)
         if not allowed:
@@ -166,6 +166,11 @@ class PetWatcherMixin:
             self._show_bubble(status_language.watching_denied(), 2500)
             print(f"[DEBUG watch_ctrl] _confirm_cloud_capture: returning False", file=sys.stderr, flush=True)
             return False
+        watcher = getattr(self, "_watcher", None)
+        if watcher is not None:
+            watcher.capture_scope = approval.scope
+            watcher.capture_region = approval.region
+            watcher.capture_application = approval.application
         log.info("[watcher] user allowed cloud vision for this capture only")
         print(f"[DEBUG watch_ctrl] _confirm_cloud_capture: user allowed, returning True", file=sys.stderr, flush=True)
         return True

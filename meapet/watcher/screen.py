@@ -508,13 +508,20 @@ class ScreenWatcher(QThread):
             )
             ratio = 1280 / max(1, image.width)
             if ratio < 1.0:
-                image = image.resize((320, int(image.height * ratio)))
-                print(f"[DEBUG screen] run: resized image to width=320, height={image.height}", file=sys.stderr, flush=True)
-            buf = io.BytesIO()
-            image.convert('RGB').save(buf, format="JPEG", quality=50)
-            encoded = base64.b64encode(buf.getvalue()).decode()
-            log.info(f"[screenshot] encoded base64 length={len(encoded)}")
-            print(f"[DEBUG screen] run: encoded base64 length={len(encoded)}", file=sys.stderr, flush=True)
+                image = image.resize(
+                    (1280, max(1, int(image.height * ratio)))
+                )
+            buffer = io.BytesIO()
+            image.convert("RGB").save(buffer, format="JPEG", quality=72)
+            encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+            attachment = ImageAttachment(
+                media_type="image/jpeg",
+                data=encoded,
+                file_name="screenshot.jpg",
+            )
+            log.info(
+                f"[screenshot] encoded base64 length={len(encoded)}"
+            )
 
             if self._stop:
                 print(f"[DEBUG screen] run: _stop set after capture, exiting", file=sys.stderr, flush=True)
@@ -709,15 +716,3 @@ class ScreenWatcher(QThread):
             return "melancholy"
         print(f"[DEBUG screen] _guess_mood: default => neutral", file=sys.stderr, flush=True)
         return "neutral"
-
-
-if __name__ == "__main__":
-    w = ScreenWatcher(idle_minutes=5)
-    w.progress.connect(lambda s: log.info(f"[test] {s}"))
-    w.result_ready.connect(lambda t, m: log.info(f"[test] 梅尔 [{m}]: {t}"))
-    w.silent.connect(lambda: log.info("[test] (不说话)"))
-    w.error.connect(lambda e: log.error(f"[test] ERROR: {e}"))
-    w.search_request.connect(lambda q: log.info(f"[test] 搜索请求: {q}"))
-    w.start()
-    w.wait()
-

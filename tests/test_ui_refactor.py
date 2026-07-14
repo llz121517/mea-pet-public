@@ -297,13 +297,13 @@ class UiRefactorTests(unittest.TestCase):
         wizard.tts_page.enable_cb.setChecked(False)
 
         wizard.llm_page.radio_ds.setChecked(True)
-        wizard.key_page_ds.key_input.clear()
+        wizard.llm_page.direct_api_key_input.clear()
         wizard._refresh_required_tabs()
         self.assertFalse(wizard.tabs.tabIcon(wizard.TAB_CHAT).isNull())
         self.assertIn("缺少", wizard.tabs.tabToolTip(wizard.TAB_CHAT))
         self.assertIn("对话", wizard.config_status.text())
 
-        wizard.key_page_ds.key_input.setText("deepseek-test-key")
+        wizard.llm_page.direct_api_key_input.setText("deepseek-test-key")
         wizard._refresh_required_tabs()
         self.assertTrue(wizard.tabs.tabIcon(wizard.TAB_CHAT).isNull())
         self.assertNotIn("对话", wizard.config_status.text())
@@ -338,8 +338,7 @@ class UiRefactorTests(unittest.TestCase):
 
         wizard = self._track(SetupWizard())
         pages = (
-            wizard.key_page_ds,
-            wizard.key_page_mimo,
+            wizard.llm_page,
             wizard.tts_page,
             wizard.vision_page,
         )
@@ -1247,24 +1246,82 @@ class UiRefactorTests(unittest.TestCase):
         )
         self.assertEqual(dialog.approval.application, "")
 
+    def test_cloud_capture_consent_includes_scope_and_uses_five_seconds(self) -> None:
+        from meapet.desktop.dialogs import CloudCaptureScopeConsentDialog
+        from meapet.ui_theme import get_ui_font_scale, set_ui_font_scale
+
+        previous_scale = get_ui_font_scale()
+        set_ui_font_scale(1.0)
+        self.addCleanup(set_ui_font_scale, previous_scale)
+        dialog = self._track(CloudCaptureScopeConsentDialog())
+        self.assertEqual(dialog.remaining_seconds, 5)
+        self.assertEqual(dialog.scope_combo.currentData(), "full_screen")
+        self.assertIn("云端", dialog.windowTitle())
+        self.assertLessEqual(dialog.width(), 460)
+        self.assertLess(dialog.height(), 430)
+        self.assertTrue(dialog.region_frame.isHidden())
+        self.assertTrue(dialog.application_frame.isHidden())
+        self.assertTrue(dialog.validation_label.isHidden())
+
+        stylesheet = dialog.styleSheet()
+        for selector in (
+            "QDialog#CaptureScopeConsentRoot",
+            "QFrame#SectionCard",
+            "QComboBox",
+            "QLineEdit",
+            "QSpinBox",
+            "QLabel#ConsentValidation",
+            "QComboBox::down-arrow",
+            "QSpinBox::up-arrow",
+            "QSpinBox::down-arrow",
+        ):
+            with self.subTest(selector=selector):
+                self.assertIn(selector, stylesheet)
+
+        dialog.show()
+        dialog._timer.stop()
+        QApplication.processEvents()
+        compact_height = dialog.height()
+        dialog.scope_combo.setCurrentIndex(
+            dialog.scope_combo.findData("region")
+        )
+        QApplication.processEvents()
+        self.assertFalse(dialog.region_frame.isHidden())
+        self.assertGreater(dialog.height(), compact_height)
+
+        dialog.scope_combo.setCurrentIndex(
+            dialog.scope_combo.findData("full_screen")
+        )
+        QApplication.processEvents()
+        self.assertEqual(dialog.height(), compact_height)
+
     def test_watcher_cloud_confirmation_uses_themed_safe_dialog(self) -> None:
+        from meapet.desktop.dialogs import CaptureApproval
         from meapet.desktop.watch_ctrl import PetWatcherMixin
 
         pet = type("WatcherHost", (PetWatcherMixin,), {})()
         pet.config = {"watcher": {"allow_cloud": True}}
         pet._is_cloud_vision = lambda: True
         pet._show_bubble = unittest.mock.Mock()
+        pet._watcher = unittest.mock.Mock()
+        approval = CaptureApproval(
+            "region",
+            {"x": 10, "y": 20, "width": 800, "height": 600},
+            "",
+        )
 
         with patch(
-            "meapet.desktop.watch_ctrl.confirm_cloud_vision",
-            return_value=False,
+            "meapet.desktop.watch_ctrl.confirm_cloud_capture_scope",
+            return_value=approval,
         ) as confirm, patch(
             "PyQt5.QtWidgets.QMessageBox.question",
             side_effect=AssertionError("不应调用系统确认框"),
         ):
-            self.assertFalse(pet._confirm_cloud_capture())
+            self.assertTrue(pet._confirm_cloud_capture())
         confirm.assert_called_once()
         self.assertEqual(confirm.call_args.kwargs["timeout_seconds"], 5)
+        self.assertEqual(pet._watcher.capture_scope, "region")
+        self.assertEqual(pet._watcher.capture_region, approval.region)
 
 
 
@@ -1489,7 +1546,7 @@ class UiRefactorTests(unittest.TestCase):
         self.assertFalse(bubble.isVisible())
         self.assertEqual(dismissed, [True])
 
-    def test_loading_disabled_vision_config_keeps_advanced_options_collapsed(self) -> None:
+    def test_loading_disabled_vision_config_keeps_mode_options_collapsed(self) -> None:
         from wizard.page_vision import VisionPage
 
         page = self._track(VisionPage())
@@ -1498,7 +1555,6 @@ class UiRefactorTests(unittest.TestCase):
         page.apply_config({}, {"enabled": False})
         QApplication.processEvents()
 
-        self.assertFalse(page.advanced_toggle.isChecked())
         self.assertTrue(page.advanced_frame.isHidden())
         for widget in (
             page.model_label,

@@ -3,23 +3,11 @@ from __future__ import annotations
 
 import json
 import os
-import re
-import sys
-import threading
-import time
-from typing import Optional
 
-from PyQt5.QtWidgets import *
-from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject
-from PyQt5.QtGui import *
+from PyQt5.QtWidgets import QFileDialog
 
-from wizard.styles import (
-    STYLE_INPUT, STYLE_BTN_PRIMARY, STYLE_BTN_SECONDARY,
-    COLOR_BG, COLOR_CARD, COLOR_ACCENT, COLOR_TEXT, COLOR_OK, COLOR_WARN, COLOR_ERR,
-    set_status,
-)
-from wizard.platform_info import PLATFORM, CONFIG_PATH
-from wizard.env_utils import pip_install, check_installed
+from wizard.platform_info import CONFIG_PATH
+from wizard.styles import set_status
 
 class TtsPageMimoMixin:
     @staticmethod
@@ -47,32 +35,31 @@ class TtsPageMimoMixin:
             if cur:
                 candidates.append((0, "语音页已填写", cur, cur_base))
 
-        # 1) 向导对话页（MiMo Key 页）
+        # 1) 对话页是直连凭据的唯一编辑源。
         try:
             wiz = self.window()
-            if hasattr(wiz, "key_page_mimo"):
-                k = wiz.key_page_mimo.key_input.text().strip()
-                b = wiz.key_page_mimo.api_base.text().strip()
-                if k:
-                    candidates.append((1, "对话配置页（MiMo）", k, b))
-            if hasattr(wiz, "llm_page") and hasattr(wiz, "key_page") and wiz.key_page is not None:
-                try:
-                    if wiz.llm_page.get_backend() == "mimo":
-                        k = wiz.key_page.key_input.text().strip()
-                        b = wiz.key_page.api_base.text().strip()
-                        if k:
-                            candidates.append((1, "对话配置页（当前后端 MiMo）", k, b))
-                except Exception:
-                    pass
+            if (
+                hasattr(wiz, "llm_page")
+                and wiz.llm_page.get_backend() == "mimo"
+            ):
+                key = wiz.llm_page.direct_api_key_input.text().strip()
+                base = wiz.llm_page.endpoint_input.text().strip()
+                if key:
+                    candidates.append((1, "对话配置页（MiMo）", key, base))
         except Exception:
             pass
 
-        # 2) config.json
+        # 2) 当前向导实际使用的配置；不再固定读取项目根 config.json。
         try:
-            if os.path.isfile(CONFIG_PATH):
-                with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                    cfg = json.load(f)
+            wiz = self.window()
+            cfg = getattr(wiz, "_existing_config", None)
+            config_path = getattr(wiz, "config_path", CONFIG_PATH)
+            if not isinstance(cfg, dict) and os.path.isfile(config_path):
+                with open(config_path, "r", encoding="utf-8") as file:
+                    cfg = json.load(file)
+            if isinstance(cfg, dict):
                 llm = cfg.get("llm", {}) or {}
+                direct = llm.get("direct", {}) or {}
                 tts = cfg.get("tts", {}) or {}
                 if tts.get("api_key"):
                     candidates.append((
@@ -81,18 +68,23 @@ class TtsPageMimoMixin:
                         str(tts.get("api_key", "")).strip(),
                         str(tts.get("api_base") or "").strip(),
                     ))
-                if llm.get("backend") == "mimo" and llm.get("api_key"):
+                if (
+                    direct.get("provider") == "mimo"
+                    and direct.get("api_key")
+                ):
                     candidates.append((
                         2,
-                        "config.json → llm.api_key（backend=mimo）",
-                        str(llm.get("api_key", "")).strip(),
-                        str(llm.get("api_base") or "").strip(),
+                        "当前配置 → llm.direct.api_key（MiMo）",
+                        str(direct.get("api_key", "")).strip(),
+                        str(direct.get("api_base") or "").strip(),
                     ))
-                # 即使 backend 不是 mimo，只要 llm 里有 key 也作为弱候选
-                elif llm.get("api_key") and "mimo" in str(llm.get("api_base", "")).lower():
+                elif (
+                    llm.get("api_key")
+                    and "mimo" in str(llm.get("api_base", "")).lower()
+                ):
                     candidates.append((
                         3,
-                        "config.json → llm.api_key（api_base 像 MiMo）",
+                        "当前配置 → llm.api_key（MiMo 地址）",
                         str(llm.get("api_key", "")).strip(),
                         str(llm.get("api_base") or "").strip(),
                     ))

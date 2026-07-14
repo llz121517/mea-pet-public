@@ -1,25 +1,38 @@
 """配置向导主窗口"""
 from __future__ import annotations
 
+import copy
 import json
 import os
 import sys
-import traceback
 
 from PyQt5.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QMessageBox, QFrame, QScrollArea, QSizeGrip, QSizePolicy, QTabWidget,
-    QSlider, QCheckBox,
+    QApplication,
+    QAbstractButton,
+    QCheckBox,
+    QComboBox,
+    QDoubleSpinBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSizeGrip,
+    QSizePolicy,
+    QSlider,
+    QSpinBox,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
 from PyQt5.QtCore import QSize, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QIcon, QKeySequence, QPainter, QPalette, QPixmap
 from PyQt5.QtWidgets import QShortcut
 
-from wizard.platform_info import PLATFORM, CONFIG_PATH, detect_platform
+from wizard.platform_info import CONFIG_PATH, PLATFORM
 from wizard.styles import (
-    COLOR_BG,
-    COLOR_ELEVATED,
-    COLOR_TEXT,
     WIZARD_STYLESHEET,
     prepare_accessible_page,
     set_status,
@@ -34,8 +47,13 @@ from meapet.ui_theme import (
     set_ui_font_scale,
 )
 from wizard.pages import (
-    EnvCheckPage, LLMPage, BackendPage, ApiKeyPage, TTSPage, VisionPage,
+    BackendPage,
+    EnvCheckPage,
+    LLMPage,
+    TTSPage,
+    VisionPage,
 )
+
 
 class SetupWizard(QWidget):
     config_saved = pyqtSignal(dict)
@@ -46,10 +64,13 @@ class SetupWizard(QWidget):
     TAB_VISION = 3
 
     @staticmethod
-    def _read_initial_font_scale() -> float:
+    def _read_initial_font_scale(
+        config_path: str,
+        initial_config: dict | None = None,
+    ) -> float:
         """只读取显示字号，避免配置页首次绘制后再发生字体跳变。"""
         try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as file:
+            with open(config_path, "r", encoding="utf-8") as file:
                 config = json.load(file)
             if isinstance(config, dict) and isinstance(
                 config.get("display"),
@@ -60,12 +81,41 @@ class SetupWizard(QWidget):
                 )
         except (OSError, ValueError, TypeError):
             pass
+        if isinstance(initial_config, dict) and isinstance(
+            initial_config.get("display"),
+            dict,
+        ):
+            return normalize_ui_font_scale(
+                initial_config["display"].get("font_scale")
+            )
         return UI_FONT_SCALE_DEFAULT
 
-    def __init__(self):
-        initial_font_scale = self._read_initial_font_scale()
+    def __init__(
+        self,
+        config_path: str | os.PathLike[str] | None = None,
+        initial_config: dict | None = None,
+    ):
+        from meapet.config.store import resolve_writable_config_path
+
+        source_path = os.fspath(config_path) if config_path else CONFIG_PATH
+        self._source_config_path = source_path
+        self.config_path = resolve_writable_config_path(source_path)
+        self._initial_config = copy.deepcopy(initial_config or {})
+        font_config_path = (
+            self.config_path
+            if os.path.isfile(self.config_path)
+            else source_path
+        )
+        initial_font_scale = self._read_initial_font_scale(
+            font_config_path,
+            self._initial_config,
+        )
         set_ui_font_scale(initial_font_scale)
         super().__init__()
+        self._dirty = False
+        self._suppress_dirty = False
+        self._closing_after_save = False
+        self._connection_test_jobs = {}
         ensure_application_fonts()
         self.setWindowTitle(f"MeaPet 配置 — {PLATFORM['os_label']}")
         self.setObjectName("WizardRoot")
@@ -130,8 +180,6 @@ class SetupWizard(QWidget):
         self.display_page = self._build_display_settings(initial_font_scale)
         self.backend_page = BackendPage()
         self.llm_page = LLMPage()
-        self.key_page_ds = ApiKeyPage(self, backend="deepseek")
-        self.key_page_mimo = ApiKeyPage(self, backend="mimo")
         self.tts_page = TTSPage()
         self.vision_page = VisionPage()
 
@@ -140,15 +188,11 @@ class SetupWizard(QWidget):
             self.display_page,
             self.backend_page,
             self.llm_page,
-            self.key_page_ds,
-            self.key_page_mimo,
             self.tts_page,
             self.vision_page,
         ):
             prepare_accessible_page(page)
 
-        # 当前显示的 key_page 引用（指向 key_page_ds 或 key_page_mimo）
-        self.key_page = self.key_page_ds
         self._existing_config = {}
         self._missing_icon = self._build_missing_icon()
 
@@ -180,8 +224,6 @@ class SetupWizard(QWidget):
             self._make_scroll_tab(
                 self.backend_page,
                 self.llm_page,
-                self.key_page_ds,
-                self.key_page_mimo,
             ),
             "对话",
         )
@@ -228,14 +270,20 @@ class SetupWizard(QWidget):
             w.mouseReleaseEvent = lambda e: setattr(self, '_drag', None)
 
         self._connect_required_field_updates()
+        self._connect_connection_tests()
         self._sync_llm_key_panel()
+        self._connect_dirty_tracking()
         self._refresh_required_tabs()
         # 再次配置：读取并回填上次 config.json
         self._load_timer = QTimer(self)
         self._load_timer.setSingleShot(True)
         self._load_timer.timeout.connect(self._load_existing_config)
-        self._load_timer.start(0)
-        apply_ui_font_scale(self, initial_font_scale)
+        # 配置文件是本地小 JSON；首帧前同步回填，避免 100% 控件随后跳回保存值。
+        self._load_existing_config()
+        apply_ui_font_scale(
+            self,
+            self.font_scale_slider.value() / 100.0,
+        )
 
     def _build_display_settings(self, initial_scale: float) -> QFrame:
         """创建独立的界面字号设置卡，并提供即时预览。"""
@@ -301,6 +349,13 @@ class SetupWizard(QWidget):
         self.reduced_motion_cb.setChecked(False)
         layout.addWidget(self.reduced_motion_cb)
 
+        motion_hint = QLabel(
+            "减少动画保存后立即应用；字体缩放需要桌宠重启后完整应用。"
+        )
+        motion_hint.setObjectName("HelperText")
+        motion_hint.setWordWrap(True)
+        layout.addWidget(motion_hint)
+
         self.font_scale_slider.valueChanged.connect(
             self._on_font_scale_changed
         )
@@ -310,6 +365,151 @@ class SetupWizard(QWidget):
         value = int(value)
         self.font_scale_value.setText(f"{value}%")
         apply_ui_font_scale(self, value / 100.0)
+
+    @property
+    def is_dirty(self) -> bool:
+        """配置页是否含尚未保存的用户编辑。"""
+        return bool(self._dirty)
+
+    def _mark_dirty(self, *_args) -> None:
+        if not self._suppress_dirty:
+            self._dirty = True
+
+    def _connect_dirty_tracking(self) -> None:
+        """统一跟踪表单控件，避免新增字段时忘记接入关闭确认。"""
+        for widget in self.findChildren(QLineEdit):
+            widget.textChanged.connect(self._mark_dirty)
+        for widget in self.findChildren(QComboBox):
+            widget.currentIndexChanged.connect(self._mark_dirty)
+        for widget in self.findChildren(QAbstractButton):
+            if widget.property("doesNotModifyConfig"):
+                continue
+            widget.toggled.connect(self._mark_dirty)
+        for widget in self.findChildren(QSpinBox):
+            widget.valueChanged.connect(self._mark_dirty)
+        for widget in self.findChildren(QDoubleSpinBox):
+            widget.valueChanged.connect(self._mark_dirty)
+        for widget in self.findChildren(QSlider):
+            widget.valueChanged.connect(self._mark_dirty)
+
+    def closeEvent(self, event) -> None:
+        if (
+            self.is_dirty
+            and self.isVisible()
+            and not self._closing_after_save
+        ):
+            reply = QMessageBox.question(
+                self,
+                "放弃未保存的更改？",
+                "当前配置尚未保存。关闭后这些更改会丢失。",
+                QMessageBox.Discard | QMessageBox.Cancel,
+                QMessageBox.Cancel,
+            )
+            if reply != QMessageBox.Discard:
+                event.ignore()
+                return
+        self._dirty = False
+        self._cancel_connection_tests()
+        event.accept()
+
+    def _connect_connection_tests(self) -> None:
+        """把四个请求入口统一接到后台探测，不在 GUI 线程等待网络。"""
+        bindings = (
+            (
+                "direct",
+                self.llm_page.test_connection_btn,
+                self.llm_page.connection_status,
+            ),
+            (
+                "agent",
+                self.backend_page.test_agent_connection_btn,
+                self.backend_page.agent_connection_status,
+            ),
+            (
+                "tts",
+                self.tts_page.test_connection_btn,
+                self.tts_page.connection_status,
+            ),
+            (
+                "vision",
+                self.vision_page.test_connection_btn,
+                self.vision_page.connection_status,
+            ),
+        )
+        for target, button, status in bindings:
+            button.clicked.connect(
+                lambda _checked=False, kind=target, action=button, label=status: (
+                    self._start_connection_test(kind, action, label)
+                )
+            )
+
+    def _start_connection_test(
+        self,
+        target: str,
+        button: QPushButton,
+        status: QLabel,
+    ) -> None:
+        active = self._connection_test_jobs.get(target)
+        if active is not None and not active[0].done():
+            return
+        try:
+            from meapet.async_runtime import submit
+            from wizard.connection_test import probe_connection
+
+            config = self.collect_config()
+            future = submit(probe_connection(target, config))
+        except Exception as exc:
+            set_status(status, "error", f"无法开始测试：{exc}")
+            return
+
+        button.setEnabled(False)
+        set_status(status, "warning", "正在测试，请稍候…")
+        timer = QTimer(self)
+        timer.setInterval(100)
+        timer.timeout.connect(
+            lambda kind=target: self._poll_connection_test(kind)
+        )
+        self._connection_test_jobs[target] = (future, timer, button, status)
+        timer.start()
+
+    def _poll_connection_test(self, target: str) -> None:
+        job = self._connection_test_jobs.get(target)
+        if job is None:
+            return
+        future, timer, button, status = job
+        if not future.done():
+            return
+        timer.stop()
+        timer.deleteLater()
+        self._connection_test_jobs.pop(target, None)
+        try:
+            result = future.result()
+        except Exception as exc:
+            set_status(status, "error", f"测试失败：{exc}")
+        else:
+            set_status(
+                status,
+                "success" if result.ok else "error",
+                result.message,
+            )
+        enabled = True
+        if target == "tts":
+            enabled = self.tts_page.enable_cb.isChecked()
+        elif target == "vision":
+            enabled = self.vision_page.mode_combo.currentData() != "disabled"
+        button.setEnabled(enabled)
+
+    def _cancel_connection_tests(self) -> None:
+        for future, timer, button, _status in tuple(
+            self._connection_test_jobs.values()
+        ):
+            timer.stop()
+            future.cancel()
+            try:
+                button.setEnabled(True)
+            except RuntimeError:
+                pass
+        self._connection_test_jobs.clear()
 
     def _make_scroll_tab(self, *pages: QWidget) -> QScrollArea:
         """给每个标签提供独立滚动区域，避免高 DPI 或小窗口裁切表单。"""
@@ -346,6 +546,9 @@ class SetupWizard(QWidget):
         return QIcon(pixmap)
 
     def _connect_required_field_updates(self) -> None:
+        self.env_page.requirements_changed.connect(
+            self._refresh_required_tabs
+        )
         for radio in (
             self.llm_page.radio_ollama,
             self.llm_page.radio_ds,
@@ -360,6 +563,15 @@ class SetupWizard(QWidget):
             self._on_conversation_mode_changed
         )
         self.backend_page.agent_base_url.textChanged.connect(
+            self._refresh_required_tabs
+        )
+        self.llm_page.endpoint_input.textChanged.connect(
+            self._refresh_required_tabs
+        )
+        self.llm_page.model_input.textChanged.connect(
+            self._refresh_required_tabs
+        )
+        self.llm_page.direct_api_key_input.textChanged.connect(
             self._refresh_required_tabs
         )
         self.backend_page.control_enabled.toggled.connect(
@@ -377,8 +589,6 @@ class SetupWizard(QWidget):
         self.backend_page.control_key_file.textChanged.connect(
             self._refresh_required_tabs
         )
-        self.key_page_ds.key_input.textChanged.connect(self._refresh_required_tabs)
-        self.key_page_mimo.key_input.textChanged.connect(self._refresh_required_tabs)
         self.tts_page.enable_cb.toggled.connect(self._refresh_required_tabs)
         self.tts_page.backend_combo.currentIndexChanged.connect(
             self._refresh_required_tabs
@@ -387,6 +597,12 @@ class SetupWizard(QWidget):
             self._refresh_required_tabs
         )
         self.vision_page.enable_cb.toggled.connect(self._refresh_required_tabs)
+        self.vision_page.mode_combo.currentIndexChanged.connect(
+            self._refresh_required_tabs
+        )
+        self.vision_page.main_model_vision_cb.toggled.connect(
+            self._refresh_required_tabs
+        )
         self.vision_page.allow_cloud_cb.toggled.connect(
             self._refresh_required_tabs
         )
@@ -411,14 +627,7 @@ class SetupWizard(QWidget):
 
     def _sync_llm_key_panel(self) -> None:
         direct_mode = self.backend_page.direct_radio.isChecked()
-        backend = self.llm_page.get_backend()
         self.llm_page.setVisible(direct_mode)
-        self.key_page_ds.setVisible(direct_mode and backend == "deepseek")
-        self.key_page_mimo.setVisible(direct_mode and backend == "mimo")
-        if backend == "mimo":
-            self.key_page = self.key_page_mimo
-        elif backend == "deepseek":
-            self.key_page = self.key_page_ds
 
     def _configuration_issues(self) -> dict[int, list[str]]:
         issues = {
@@ -427,7 +636,12 @@ class SetupWizard(QWidget):
             self.TAB_VOICE: [],
             self.TAB_VISION: [],
         }
-        if self.backend_page.agent_radio.isChecked():
+        issues[self.TAB_ENV].extend(self.env_page.required_missing())
+
+        conversation_mode = self.backend_page.mode()
+        llm_backend = self.llm_page.get_backend()
+        llm_key = self.llm_page.direct_api_key_input.text().strip()
+        if conversation_mode == "agent":
             if not self.backend_page.agent_base_url.text().strip():
                 issues[self.TAB_CHAT].append("Agent 地址")
             if self.backend_page.control_enabled.isChecked():
@@ -440,16 +654,14 @@ class SetupWizard(QWidget):
                         issues[self.TAB_CHAT].append(
                             "内网监听需 HTTPS 证书，或明确允许 HTTP"
                         )
-            return issues
-        llm_backend = self.llm_page.get_backend()
-        llm_key = ""
-        if llm_backend == "deepseek":
-            llm_key = self.key_page_ds.key_input.text().strip()
-            if not llm_key:
+        else:
+            if not self.llm_page.endpoint_input.text().strip():
+                issues[self.TAB_CHAT].append("API 地址")
+            if not self.llm_page.model_input.text().strip():
+                issues[self.TAB_CHAT].append("模型 ID")
+            if llm_backend == "deepseek" and not llm_key:
                 issues[self.TAB_CHAT].append("DeepSeek API Key")
-        elif llm_backend == "mimo":
-            llm_key = self.key_page_mimo.key_input.text().strip()
-            if not llm_key:
+            elif llm_backend == "mimo" and not llm_key:
                 issues[self.TAB_CHAT].append("MiMo API Key")
 
         if (
@@ -457,18 +669,20 @@ class SetupWizard(QWidget):
             and self.tts_page.backend_combo.currentData() == "mimo"
         ):
             tts_key = self.tts_page.mimo_api_key_input.text().strip()
-            if not tts_key and llm_backend == "mimo":
+            if (
+                not tts_key
+                and conversation_mode == "direct"
+                and llm_backend == "mimo"
+            ):
                 tts_key = llm_key
             if not tts_key:
                 issues[self.TAB_VOICE].append("MiMo TTS API Key")
 
         if self.vision_page.enable_cb.isChecked():
             vision_mode = self.vision_page.mode_combo.currentData() or "disabled"
-            conversation_mode = self.backend_page.mode()
             if vision_mode == "disabled":
                 issues[self.TAB_VISION].append("视觉链路模式")
-                return issues
-            if vision_mode == "inherit":
+            elif vision_mode == "inherit":
                 if not self.vision_page.main_model_vision_cb.isChecked():
                     issues[self.TAB_VISION].append("主回复后端图片能力确认")
                 if conversation_mode == "agent":
@@ -482,22 +696,27 @@ class SetupWizard(QWidget):
                     and not self.vision_page.allow_cloud_cb.isChecked()
                 ):
                     issues[self.TAB_VISION].append("云端识图授权")
-                return issues
-            if conversation_mode == "agent":
+            elif conversation_mode == "agent":
                 issues[self.TAB_VISION].append("Agent 模式须由 Agent 直接读图")
-                return issues
-            selected_backend = self.vision_page.backend_combo.currentData() or "auto"
-            actual_backend = selected_backend
-            if selected_backend == "auto":
-                actual_backend = llm_backend if llm_backend in {"ollama", "mimo"} else "ollama"
-            if actual_backend == "mimo":
-                if not self.vision_page.allow_cloud_cb.isChecked():
-                    issues[self.TAB_VISION].append("云端识图授权")
-                vision_key = self.vision_page.api_key_input.text().strip()
-                if not vision_key and llm_backend == "mimo":
-                    vision_key = llm_key
-                if not vision_key:
-                    issues[self.TAB_VISION].append("云端识图 API Key")
+            else:
+                selected_backend = (
+                    self.vision_page.backend_combo.currentData() or "auto"
+                )
+                actual_backend = selected_backend
+                if selected_backend == "auto":
+                    actual_backend = (
+                        llm_backend
+                        if llm_backend in {"ollama", "mimo"}
+                        else "ollama"
+                    )
+                if actual_backend == "mimo":
+                    if not self.vision_page.allow_cloud_cb.isChecked():
+                        issues[self.TAB_VISION].append("云端识图授权")
+                    vision_key = self.vision_page.api_key_input.text().strip()
+                    if not vision_key and llm_backend == "mimo":
+                        vision_key = llm_key
+                    if not vision_key:
+                        issues[self.TAB_VISION].append("云端识图 API Key")
         return issues
 
     def _refresh_required_tabs(self, *_args) -> None:
@@ -528,93 +747,109 @@ class SetupWizard(QWidget):
             set_status(self.config_status, "success", message)
             self.config_status.setAccessibleDescription(message)
 
-    def _load_existing_config(self):
-        """打开向导时加载 config.json，恢复上次选择（再次配置不会丢）。"""
-        self._existing_config = {}
-        if not os.path.isfile(CONFIG_PATH):
-            return
+    @staticmethod
+    def _read_config_file(path: str) -> dict | None:
         try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-            if not isinstance(cfg, dict):
-                return
-            self._existing_config = cfg
-        except Exception as e:
-            try:
-                self.env_page.log(f"读取已有配置失败: {e}")
-            except Exception:
-                pass
-            return
+            with open(path, "r", encoding="utf-8") as file:
+                config = json.load(file)
+        except (OSError, ValueError, TypeError):
+            return None
+        return config if isinstance(config, dict) else None
 
-        llm = cfg.get("llm", {}) or {}
-        tts = cfg.get("tts", {}) or {}
-        display = (
-            cfg.get("display", {})
-            if isinstance(cfg.get("display"), dict)
-            else {}
+    @classmethod
+    def _template_config(cls) -> dict:
+        template_path = os.path.join(
+            os.path.dirname(CONFIG_PATH),
+            "config.example.json",
         )
+        return cls._read_config_file(template_path) or {}
 
-        self.font_scale_slider.setValue(
-            round(normalize_ui_font_scale(display.get("font_scale", 1.0)) * 100)
-        )
-        if hasattr(self, "reduced_motion_cb"):
+    def _load_existing_config(self):
+        """从桌宠实际使用的路径恢复配置，首次运行则使用唯一模板。"""
+        self._suppress_dirty = True
+        try:
+            cfg = None
+            for candidate in dict.fromkeys(
+                (self.config_path, self._source_config_path)
+            ):
+                if candidate and os.path.isfile(candidate):
+                    cfg = self._read_config_file(candidate)
+                    if cfg is not None:
+                        break
+                    self.env_page.log(f"读取已有配置失败: {candidate}")
+            if cfg is None and self._initial_config:
+                cfg = copy.deepcopy(self._initial_config)
+            if cfg is None:
+                cfg = self._template_config()
+            self._existing_config = copy.deepcopy(cfg)
+
+            tts = cfg.get("tts", {}) or {}
+            display = (
+                cfg.get("display", {})
+                if isinstance(cfg.get("display"), dict)
+                else {}
+            )
+
+            self.font_scale_slider.setValue(
+                round(
+                    normalize_ui_font_scale(
+                        display.get("font_scale", 1.0)
+                    )
+                    * 100
+                )
+            )
             self.reduced_motion_cb.setChecked(
                 bool(display.get("reduced_motion", False))
             )
 
-        self.apply_conversation_config(cfg)
-        backend = self.llm_page.get_backend()
+            self.apply_conversation_config(cfg)
+            backend = self.llm_page.get_backend()
 
-        # 语音页
-        try:
-            self.tts_page.apply_config(tts)
             try:
+                self.tts_page.apply_config(tts)
                 self.env_page.log("已恢复上次语音配置（引擎/语言/克隆等）")
-            except Exception:
-                pass
-        except Exception as e:
-            try:
-                self.env_page.log(f"恢复语音配置失败: {e}")
-            except Exception:
-                pass
+            except Exception as exc:
+                self.env_page.log(f"恢复语音配置失败: {exc}")
 
-        # 识图 / 屏幕观察
-        try:
-            vision = cfg.get("vision", {}) or {}
-            watcher = cfg.get("watcher", {}) or {}
-            # 单一 config：watcher 已含 interval
-            if "interval" not in watcher and isinstance(watcher.get("min_ms"), (int, float)):
-                watcher = dict(watcher)
-                watcher["interval"] = {
-                    "min_ms": int(watcher.get("min_ms", 180000)),
-                    "max_ms": int(watcher.get("max_ms", 360000)),
-                }
-            self.vision_page.apply_config(vision, watcher)
-        except Exception as e:
             try:
-                self.env_page.log(f"恢复识图配置失败: {e}")
-            except Exception:
-                pass
+                vision = cfg.get("vision", {}) or {}
+                watcher = cfg.get("watcher", {}) or {}
+                if "interval" not in watcher and isinstance(
+                    watcher.get("min_ms"),
+                    (int, float),
+                ):
+                    watcher = dict(watcher)
+                    watcher["interval"] = {
+                        "min_ms": int(watcher.get("min_ms", 180000)),
+                        "max_ms": int(watcher.get("max_ms", 360000)),
+                    }
+                self.vision_page.apply_config(vision, watcher)
+            except Exception as exc:
+                self.env_page.log(f"恢复识图配置失败: {exc}")
 
-        # 环境页提示
-        try:
             eng = (tts.get("engine") or "?").lower()
             tts_on = "开" if tts.get("enabled", True) else "关"
-            w = (cfg.get("watcher") or {})
+            w = cfg.get("watcher") or {}
             w_on = "开" if w.get("enabled") else "关"
-            v_back = ((cfg.get("vision") or {}).get("backend") or "跟随对话")
+            v_back = (cfg.get("vision") or {}).get("backend") or "跟随对话"
             self.env_page.log(
                 f"📂 已加载上次配置：AI={backend}，语音={eng}（{tts_on}），识图={v_back or '跟随'}（观察{w_on}）"
             )
-        except Exception:
-            pass
-        self._sync_llm_key_panel()
-        self._refresh_required_tabs()
+        finally:
+            self._sync_llm_key_panel()
+            self._refresh_required_tabs()
+            self._dirty = False
+            self._suppress_dirty = False
 
     def apply_conversation_config(self, config: dict) -> None:
         """恢复 direct/Agent 两侧配置；切换模式时不清空非活动侧。"""
         from meapet.config.store import normalize_config
 
+        if isinstance(config, dict):
+            self._existing_config = self._deep_merge(
+                getattr(self, "_existing_config", {}) or {},
+                config,
+            )
         normalized = normalize_config(config or {})
         llm = normalized.get("llm") or {}
         direct = llm.get("direct") or {}
@@ -624,36 +859,16 @@ class SetupWizard(QWidget):
             normalized.get("ui") or {},
         )
         self.llm_page.apply_direct_profile(direct)
-
-        provider = self.llm_page.get_backend()
-        api_key = str(direct.get("api_key") or "")
-        endpoint = str(
-            direct.get("host")
-            if direct.get("protocol") == "ollama_chat"
-            else direct.get("api_base")
-            or ""
-        )
-        self.llm_page.direct_api_key_input.setText(api_key)
-        if provider == "mimo":
-            self.key_page = self.key_page_mimo
-            self.key_page_mimo.key_input.setText(api_key)
-            if endpoint:
-                self.key_page_mimo.api_base.setText(endpoint)
-        elif provider == "deepseek":
-            self.key_page = self.key_page_ds
-            self.key_page_ds.key_input.setText(api_key)
-            if endpoint:
-                self.key_page_ds.api_base.setText(endpoint)
         self._sync_llm_key_panel()
 
     def _deep_merge(self, base: dict, override: dict) -> dict:
         """递归合并：override 覆盖 base，未涉及的旧字段保留。"""
-        out = dict(base or {})
+        out = copy.deepcopy(base or {})
         for k, v in (override or {}).items():
             if isinstance(v, dict) and isinstance(out.get(k), dict):
                 out[k] = self._deep_merge(out[k], v)
             else:
-                out[k] = v
+                out[k] = copy.deepcopy(v)
         return out
 
     def _drag_start(self, e):
@@ -665,11 +880,31 @@ class SetupWizard(QWidget):
             self.move(self.pos() + e.globalPos() - self._drag)
             self._drag = e.globalPos()
 
-    def collect_config(self):
-        reference_audios = {}
+    def _config_base(self, base_config: dict | None = None) -> dict:
+        """用模板补缺，以现有配置为准；绝不反向覆盖已有字段。"""
+        existing = (
+            base_config
+            if isinstance(base_config, dict)
+            else getattr(self, "_existing_config", {}) or {}
+        )
+        return self._deep_merge(self._template_config(), existing)
+
+    def _collect_display_fields(self, config: dict) -> None:
+        """显示页只负责它实际展示的两个选项。"""
+        display = config.setdefault("display", {})
+        display["font_scale"] = self.font_scale_slider.value() / 100.0
+        display["reduced_motion"] = self.reduced_motion_cb.isChecked()
+
+    def _collect_reference_audios(
+        self,
+        tts_config: dict,
+    ) -> tuple[dict, str, dict]:
+        from meapet.config.normalizers import normalize_gsv_ref_language
+
+        references = {}
         reference_inputs = getattr(self.tts_page, "gsv_reference_inputs", {})
         reference_texts = getattr(self.tts_page, "_gsv_reference_texts", {})
-        loaded_reference_paths = getattr(
+        loaded_paths = getattr(
             self.tts_page,
             "_gsv_reference_loaded_paths",
             {},
@@ -678,271 +913,110 @@ class SetupWizard(QWidget):
             path = widget.text().strip()
             if not path:
                 continue
-            text = (
+            text_value = (
                 str(reference_texts.get(language) or "").strip()
-                if path == loaded_reference_paths.get(language)
+                if path == loaded_paths.get(language)
                 else ""
             )
-            reference_audios[language] = {"path": path, "text": text}
+            references[language] = {"path": path, "text": text_value}
 
-        legacy_language = "jp"
-        if legacy_language not in reference_audios and reference_audios:
-            legacy_language = next(iter(reference_audios))
-        legacy_reference = reference_audios.get(legacy_language) or {}
-        config = {
-            "llm": {"backend": self.llm_page.get_backend(), "temperature": 0.7},
-            "vision": {"model": "qwen3.5:4b", "backend": "", "enabled": False},
-            "tts": {
-                "engine": self.tts_page.backend_combo.currentData(),
-                "enabled": self.tts_page.enable_cb.isChecked(),
-                "gpt_weights_dir": "./models/GPT_weights",
-                "sovits_weights_dir": "./models/SoVITS_weights",
-                "gpt_model": "mea_pro-e50.ckpt",
-                "sovits_model": "mea_pro_e24_s13704.pth",
-                "ref_dir": "./GPT-Sovits",
-                "gsv_ref_wav": str(legacy_reference.get("path") or ""),
-                "gsv_ref_lang": legacy_language,
-                "reference_audios": reference_audios,
-                "top_k": 15, "top_p": 0.8,
-                "temperature": 0.6, "speed": 1.0,
-                "translate_to_jp": bool(
-                    hasattr(self.tts_page, "translation_enabled_cb")
-                    and self.tts_page.translation_enabled_cb.isChecked()
-                ),
-                "translate_target_language": (
-                    self.tts_page.translate_target_combo.currentData() or "jp"
-                    if hasattr(self.tts_page, "translate_target_combo")
-                    else "jp"
-                ),
-                "voice_lang": (
-                    (self.tts_page.mimo_voice_lang_combo.currentData() or "jp")
-                    if hasattr(self.tts_page, "mimo_voice_lang_combo")
-                    and self.tts_page.backend_combo.currentData() == "mimo"
-                    else "jp"
-                ),
-                "translate_api_key": "",
-                "translate_model": "deepseek-v4-flash",
-                "api_base": "https://api.xiaomimimo.com/v1",
-                "model": "mimo-v2.5-tts",
-                "voice": (
-                    self.tts_page.mimo_voice_input.text().strip()
-                    if hasattr(self.tts_page, "mimo_voice_input")
-                    else "冰糖"
-                ) or "冰糖",
-                "style": "",
-                "voice_clone": bool(
-                    hasattr(self.tts_page, "mimo_voiceclone_cb")
-                    and self.tts_page.mimo_voiceclone_cb.isChecked()
-                ),
-                "clone_ref": (
-                    self.tts_page.mimo_clone_ref_input.text().strip()
-                    if hasattr(self.tts_page, "mimo_clone_ref_input")
-                    else ""
-                ),
-                "clone_dir": "./voice_cache",
-            },
-            "display": {
-                "scale": 0.5,
-                "fps": 30,
-                "font_scale": self.font_scale_slider.value() / 100.0,
-                "reduced_motion": bool(
-                    getattr(self, "reduced_motion_cb", None)
-                    and self.reduced_motion_cb.isChecked()
-                ),
-            },
-            "character": {"name": "梅尔", "default_outfit": "01", "default_direction": "A"},
-            "sprite_dir": "./sprites",
-            "live2d": {
-                "model_dir": "./live2d/model/mea_live2d",
-                "enabled": True, "scale": 0.15
-            }
+        legacy_language = normalize_gsv_ref_language(
+            tts_config.get("gsv_ref_lang") or "jp"
+        )
+        if legacy_language not in references and references:
+            legacy_language = next(iter(references))
+        legacy_reference = references.get(legacy_language) or {}
+        return references, legacy_language, legacy_reference
+
+    def _collect_tts_fields(self, config: dict) -> None:
+        """将语音页控件写回 tts 节；模型权重等非 UI 字段原样保留。"""
+        tts = config.setdefault("tts", {})
+        references, legacy_language, legacy_reference = (
+            self._collect_reference_audios(tts)
+        )
+        engine = self.tts_page.backend_combo.currentData() or "gpt_sovits"
+        translation_target = (
+            self.tts_page.translate_target_combo.currentData() or "jp"
+        )
+        use_clone = self.tts_page.mimo_voiceclone_cb.isChecked()
+
+        llm = config.get("llm") or {}
+        direct = llm.get("direct") or {}
+        tts_key = self.tts_page.mimo_api_key_input.text().strip()
+        tts_base = self.tts_page.mimo_api_base_input.text().strip()
+        if (
+            not tts_key
+            and llm.get("mode") == "direct"
+            and direct.get("provider") == "mimo"
+        ):
+            tts_key = str(direct.get("api_key") or "")
+        if not tts_base:
+            if (
+                llm.get("mode") == "direct"
+                and direct.get("provider") == "mimo"
+            ):
+                tts_base = str(direct.get("api_base") or "")
+            tts_base = tts_base or "https://api.xiaomimimo.com/v1"
+
+        gsv_python = self.tts_page.gsv_dir_input.text().strip()
+        if gsv_python and os.path.isdir(gsv_python):
+            detected = self.tts_page._find_python_exe(gsv_python)
+            if detected:
+                gsv_python = detected
+
+        patch = {
+            "engine": engine,
+            "enabled": self.tts_page.enable_cb.isChecked(),
+            "gsv_ref_wav": str(legacy_reference.get("path") or ""),
+            "gsv_ref_lang": legacy_language,
+            "reference_audios": references,
+            "translate_to_jp": (
+                self.tts_page.translation_enabled_cb.isChecked()
+            ),
+            "translate_target_language": translation_target,
+            "translate_api_key": self.tts_page.translate_key.text().strip(),
+            "python_exe": gsv_python,
+            "vits_python": self.tts_page.vits_python_input.text().strip(),
+            "api_key": tts_key,
+            "api_base": tts_base,
+            "voice": self.tts_page.mimo_voice_input.text().strip() or "冰糖",
+            "voice_lang": (
+                self.tts_page.mimo_voice_lang_combo.currentData() or "jp"
+            ),
+            "voice_clone": use_clone,
+            "clone_ref": self.tts_page.mimo_clone_ref_input.text().strip(),
         }
-
-        b = self.llm_page.get_backend()
-        if b == "ollama":
-            config["llm"]["host"] = "http://127.0.0.1:11434"
-            config["llm"]["model"] = "qwen3.5:4b"
-            config["llm"]["api_key"] = ""
-            config["llm"]["api_base"] = ""
-            config["llm"]["bridge_url"] = ""
-        elif b == "deepseek":
-            config["llm"]["api_key"] = self.key_page.key_input.text().strip()
-            config["llm"]["api_base"] = self.key_page.api_base.text().strip()
-            config["llm"]["model"] = "deepseek-v4-flash"
-        elif b == "mimo":
-            config["llm"]["api_key"] = self.key_page.key_input.text().strip()
-            config["llm"]["api_base"] = self.key_page.api_base.text().strip()
-            config["llm"]["model"] = "mimo-v2.5"
-            config["llm"]["host"] = ""
-            config["llm"]["bridge_url"] = ""
-            # 默认 vision 跟随对话；若用户在识图页另选 Ollama，collect 会覆盖
-            if not config.get("vision", {}).get("backend"):
-                config["vision"]["model"] = "mimo"
-
-        # 翻译备用 Key（本地引擎中文→日语时）
-        if self.tts_page.enable_cb.isChecked():
-            tk = self.tts_page.translate_key.text().strip()
-            if tk:
-                config["tts"]["translate_api_key"] = tk
-
-        # GPT-SoVITS Python 路径
-        gsv_path = self.tts_page.gsv_dir_input.text().strip()
-        if gsv_path:
-            config["tts"]["python_exe"] = gsv_path
-
-        # VITS Python 路径
-        vits_py = self.tts_page.vits_python_input.text().strip()
-        if vits_py:
-            config["tts"]["vits_python"] = vits_py
-
-        # MiMo TTS：优先用语音页填写的 Key；为空时再回退对话页 MiMo Key
-        if config["tts"].get("engine") == "mimo":
-            tts_key = ""
-            tts_base = ""
-            if hasattr(self.tts_page, "mimo_api_key_input"):
-                tts_key = self.tts_page.mimo_api_key_input.text().strip()
-            if hasattr(self.tts_page, "mimo_api_base_input"):
-                tts_base = self.tts_page.mimo_api_base_input.text().strip()
-
-            if not tts_key and b == "mimo":
-                tts_key = config["llm"].get("api_key", "")
-            if not tts_base:
-                if b == "mimo" and config["llm"].get("api_base"):
-                    tts_base = config["llm"]["api_base"]
-                else:
-                    tts_base = "https://api.xiaomimimo.com/v1"
-
-            config["tts"]["api_key"] = tts_key
-            config["tts"]["api_base"] = tts_base
-            # voice-clone：切换模型并写入参考音频
-            use_clone = bool(
-                hasattr(self.tts_page, "mimo_voiceclone_cb")
-                and self.tts_page.mimo_voiceclone_cb.isChecked()
-            )
-            clone_ref = ""
-            if hasattr(self.tts_page, "mimo_clone_ref_input"):
-                clone_ref = self.tts_page.mimo_clone_ref_input.text().strip()
-            config["tts"]["voice_clone"] = use_clone
-            if clone_ref:
-                config["tts"]["clone_ref"] = clone_ref
-            if use_clone:
-                config["tts"]["model"] = "mimo-v2.5-tts-voiceclone"
-                if not (config["tts"].get("voice") or "").strip() or config["tts"].get("voice") == "冰糖":
-                    config["tts"]["voice"] = "clone"
-            else:
-                # 保持内置音色模型
-                if "voiceclone" in str(config["tts"].get("model", "")).lower():
-                    config["tts"]["model"] = "mimo-v2.5-tts"
-
-        # 识图 / 屏幕观察（独立配置）
-        try:
-            vw = self.vision_page.collect(b, config.get("llm", {}))
-            config["vision"] = vw.get("vision", config.get("vision", {}))
-            config["watcher"] = vw.get("watcher", {
-                "enabled": False,
-                "allow_cloud": False,
-                "interval": {"min_ms": 180000, "max_ms": 360000},
-            })
-        except Exception:
-            config.setdefault("watcher", {
-                "enabled": False,
-                "allow_cloud": False,
-                "interval": {"min_ms": 180000, "max_ms": 360000},
-            })
-
-        # 与已有 config 合并，避免「再次配置」把未改动的字段冲掉
-        if getattr(self, "_existing_config", None):
-            config = self._deep_merge(self._existing_config, config)
-            # 再写回本次向导明确收集的关键字段（防止 merge 后被旧值盖住）
-            config["llm"]["backend"] = self.llm_page.get_backend()
-            if b == "mimo":
-                config["llm"]["api_key"] = self.key_page_mimo.key_input.text().strip()
-                config["llm"]["api_base"] = self.key_page_mimo.api_base.text().strip()
-                config["llm"]["model"] = config["llm"].get("model") or "mimo-v2.5"
-            elif b == "deepseek":
-                config["llm"]["api_key"] = self.key_page_ds.key_input.text().strip()
-                config["llm"]["api_base"] = self.key_page_ds.api_base.text().strip()
-            config["tts"]["engine"] = self.tts_page.backend_combo.currentData()
-            config["tts"]["enabled"] = self.tts_page.enable_cb.isChecked()
-            config["tts"]["reference_audios"] = reference_audios
-            config["tts"]["gsv_ref_wav"] = str(
-                legacy_reference.get("path") or ""
-            )
-            config["tts"]["gsv_ref_lang"] = legacy_language
-            if config["tts"].get("engine") == "mimo":
-                if hasattr(self.tts_page, "mimo_api_key_input"):
-                    k = self.tts_page.mimo_api_key_input.text().strip()
-                    if k:
-                        config["tts"]["api_key"] = k
-                    elif not config["tts"].get("api_key") and b == "mimo":
-                        config["tts"]["api_key"] = config["llm"].get("api_key", "")
-                if hasattr(self.tts_page, "mimo_api_base_input"):
-                    bb = self.tts_page.mimo_api_base_input.text().strip()
-                    if bb:
-                        config["tts"]["api_base"] = bb
-                if hasattr(self.tts_page, "mimo_voice_input"):
-                    vv = self.tts_page.mimo_voice_input.text().strip()
-                    if vv:
-                        config["tts"]["voice"] = vv
-                # 语言 / 翻译 / 克隆：必须用向导当前选择覆盖旧 config（否则像“每次从头”或选了不生效）
-                if hasattr(self.tts_page, "mimo_voice_lang_combo"):
-                    config["tts"]["voice_lang"] = (
-                        self.tts_page.mimo_voice_lang_combo.currentData() or "jp"
-                    )
-                if hasattr(self.tts_page, "mimo_voiceclone_cb"):
-                    use_clone = bool(self.tts_page.mimo_voiceclone_cb.isChecked())
-                    config["tts"]["voice_clone"] = use_clone
-                    if use_clone:
-                        config["tts"]["model"] = "mimo-v2.5-tts-voiceclone"
-                    elif "voiceclone" in str(config["tts"].get("model", "")).lower():
-                        config["tts"]["model"] = "mimo-v2.5-tts"
-                if hasattr(self.tts_page, "mimo_clone_ref_input"):
-                    config["tts"]["clone_ref"] = (
-                        self.tts_page.mimo_clone_ref_input.text().strip()
-                    )
-
-        self._collect_conversation_fields(config)
-        # 视觉路由需要看到最终 direct/agent 结构，因此在后端字段落定后重新收集。
-        try:
-            final_llm = config.get("llm", {}) or {}
-            vw = self.vision_page.collect(
-                str(final_llm.get("backend") or b),
-                final_llm,
-            )
-            config["vision"] = vw["vision"]
-            config["watcher"] = vw["watcher"]
-        except Exception as exc:
-            self.env_page.log(f"收集视觉路由失败: {type(exc).__name__}")
-        return config
+        model = str(tts.get("model") or "mimo-v2.5-tts")
+        if use_clone:
+            patch["model"] = "mimo-v2.5-tts-voiceclone"
+        elif "voiceclone" in model.lower():
+            patch["model"] = "mimo-v2.5-tts"
+        tts.update(patch)
 
     def _collect_conversation_fields(self, config: dict) -> None:
-        """最后写入显式后端结构，并镜像旧字段供现有 direct runtime 使用。"""
-        from meapet.config.store import normalize_config
-
+        """覆盖当前模式的表单字段，同时保留非活动侧和扩展字段。"""
         mode = self.backend_page.mode()
-        provider = self.llm_page.get_backend()
-        if provider == "deepseek":
-            api_key = self.key_page_ds.key_input.text().strip()
-        elif provider == "mimo":
-            api_key = self.key_page_mimo.key_input.text().strip()
-        else:
-            api_key = self.llm_page.direct_api_key_input.text().strip()
-
-        current_direct = self.llm_page.collect_direct_profile(api_key)
-        existing = getattr(self, "_existing_config", None) or {}
-        existing_normalized = normalize_config(existing) if existing else {}
-        existing_llm = existing_normalized.get("llm") or {}
-        if mode == "agent" and isinstance(existing_llm.get("direct"), dict):
-            direct = self._deep_merge({}, existing_llm["direct"])
-        else:
-            direct = current_direct
-
-        if mode == "direct" and isinstance(existing_llm.get("agent"), dict):
-            agent = self._deep_merge({}, existing_llm["agent"])
-        else:
-            agent = self.backend_page.collect_agent()
-
         llm = config.setdefault("llm", {})
+        existing_direct = (
+            llm.get("direct") if isinstance(llm.get("direct"), dict) else {}
+        )
+        existing_agent = (
+            llm.get("agent") if isinstance(llm.get("agent"), dict) else {}
+        )
+
+        if mode == "direct":
+            direct = self._deep_merge(
+                existing_direct,
+                self.llm_page.collect_direct_profile(),
+            )
+            agent = copy.deepcopy(existing_agent)
+        else:
+            direct = copy.deepcopy(existing_direct)
+            agent = self._deep_merge(
+                existing_agent,
+                self.backend_page.collect_agent(),
+            )
+
         llm["mode"] = mode
         llm["direct"] = direct
         llm["agent"] = agent
@@ -951,62 +1025,83 @@ class SetupWizard(QWidget):
             if mode == "agent"
             else str(direct.get("provider") or "ollama")
         )
-        # 兼容当前 ChatEngine；协议适配层完成后这些镜像字段可逐步淡出。
+        # 兼容当前 ChatEngine；协议适配层完成后可逐步淡出这些镜像字段。
         llm["host"] = str(direct.get("host") or "")
         llm["api_base"] = str(direct.get("api_base") or "")
         llm["model"] = str(direct.get("model") or "")
         llm["api_key"] = str(direct.get("api_key") or "")
         llm["temperature"] = direct.get("temperature", 0.7)
-        llm["max_tokens"] = direct.get("max_tokens", 512)
-        config["agent_control"] = self.backend_page.collect_control()
-        config.setdefault("ui", {})["timeline_turns"] = (
-            self.backend_page.timeline_turns.value()
+        llm["max_tokens"] = direct.get("max_tokens", 4096)
+
+        config["agent_control"] = self._deep_merge(
+            config.get("agent_control") or {},
+            self.backend_page.collect_control(),
         )
+        ui = config.setdefault("ui", {})
+        ui["timeline_turns"] = self.backend_page.timeline_turns.value()
+
+    def _collect_vision_fields(self, config: dict) -> None:
+        """视觉路由只收集一次，并保留页面未识别的扩展字段。"""
+        llm = config.get("llm") or {}
+        try:
+            fragments = self.vision_page.collect(
+                str(llm.get("backend") or "ollama"),
+                llm,
+            )
+        except Exception as exc:
+            self.env_page.log(f"收集视觉路由失败: {type(exc).__name__}")
+            return
+        config["vision"] = self._deep_merge(
+            config.get("vision") or {},
+            fragments.get("vision") or {},
+        )
+        config["watcher"] = self._deep_merge(
+            config.get("watcher") or {},
+            fragments.get("watcher") or {},
+        )
+
+    def collect_config(self, base_config: dict | None = None) -> dict:
+        """把 UI 作为字段补丁应用到现有配置，而不是重建整份配置。"""
+        config = self._config_base(base_config)
+        self._collect_display_fields(config)
+        self._collect_conversation_fields(config)
+        self._collect_tts_fields(config)
+        self._collect_vision_fields(config)
+        return config
 
     def _save(self):
         try:
-            # 保存前再读一次磁盘，降低与外部手改冲突时整文件覆盖的损失
-            if os.path.isfile(CONFIG_PATH):
-                try:
-                    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                        disk_cfg = json.load(f)
-                    if isinstance(disk_cfg, dict):
-                        self._existing_config = self._deep_merge(
-                            disk_cfg, getattr(self, "_existing_config", {}) or {}
-                        )
-                except Exception:
-                    pass
+            issues = self._configuration_issues()
+            missing = [
+                item
+                for section in issues.values()
+                for item in section
+            ]
+            if missing:
+                missing_text = "\n• ".join(missing)
+                reply = QMessageBox.question(
+                    self,
+                    "仍有必要配置未完成",
+                    "以下配置尚未就绪：\n"
+                    f"• {missing_text}\n\n"
+                    "仍要保存吗？运行时可能无法使用对应功能。",
+                    QMessageBox.Save | QMessageBox.Cancel,
+                    QMessageBox.Cancel,
+                )
+                if reply != QMessageBox.Save:
+                    return
 
-            final_cfg = self.collect_config()
-            # 统一写入单一 config.json（含 bubble/display/watcher UI 字段）
-            try:
-                from meapet.config.store import normalize_config, load_config, save_config
-                # 保留磁盘上已有的 UI 字段（气泡时长等），避免向导冲掉
-                try:
-                    existing = load_config(CONFIG_PATH)
-                    for key in ("bubble_duration_ms",):
-                        if key in existing and key not in final_cfg:
-                            final_cfg[key] = existing[key]
-                    # display.size_factor：保留用户右键调过的值
-                    if isinstance(existing.get("display"), dict):
-                        final_cfg.setdefault("display", {})
-                        if "size_factor" in existing["display"] and "size_factor" not in (final_cfg.get("display") or {}):
-                            final_cfg["display"]["size_factor"] = existing["display"]["size_factor"]
-                        elif "size_factor" in existing["display"]:
-                            # 向导未提供 size_factor 时保留
-                            if "size_factor" not in (final_cfg.get("display") or {}):
-                                final_cfg["display"]["size_factor"] = existing["display"]["size_factor"]
-                    # tts.sync_with_audio
-                    if isinstance(existing.get("tts"), dict) and "sync_with_audio" in existing["tts"]:
-                        final_cfg.setdefault("tts", {})
-                        final_cfg["tts"].setdefault("sync_with_audio", existing["tts"]["sync_with_audio"])
-                except Exception:
-                    pass
-                final_cfg = normalize_config(final_cfg)
-                save_config(final_cfg, CONFIG_PATH)
-            except Exception:
-                # 原子保存失败时保留旧配置，交由外层显示错误；禁止退化为截断式覆盖。
-                raise
+            # 以最新磁盘内容为底应用 UI 补丁，外部新增的非 UI 字段不会被旧内存覆盖。
+            disk_config = self._read_config_file(self.config_path)
+            if disk_config is None:
+                disk_config = copy.deepcopy(self._existing_config)
+            final_cfg = self.collect_config(base_config=disk_config)
+
+            from meapet.config.store import normalize_config, save_config
+
+            final_cfg = normalize_config(final_cfg)
+            save_config(final_cfg, self.config_path)
+            self._existing_config = copy.deepcopy(final_cfg)
 
             self.config_saved.emit(final_cfg)
             if PLATFORM["is_windows"]:
@@ -1020,8 +1115,13 @@ class SetupWizard(QWidget):
                 "配置已保存！\n\n"
                 f"{launch_hint}\n"
                 f"当前平台：{PLATFORM['display']}\n\n"
-                "提示：再次打开配置页会自动加载本次选择。"
+                "从桌宠菜单打开时：对话、语音、识图和减少动画会立即重新初始化，"
+                "无需重启；若新后端启动失败，桌宠会直接报错。\n"
+                "字体缩放需要重启桌宠后完整生效；独立打开配置页时，"
+                "其它改动会在下次启动时生效。"
             )
+            self._dirty = False
+            self._closing_after_save = True
             self.close()
         except Exception as e:
             QMessageBox.critical(self, "❌ 保存失败", str(e))

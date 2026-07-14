@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QApplication,
-    QComboBox,
     QDialog,
     QFrame,
     QGridLayout,
@@ -25,6 +24,7 @@ from meapet.ui_theme import (
     ensure_application_fonts,
     set_scaled_stylesheet,
 )
+from meapet.ui_controls import WheelSafeComboBox
 
 
 DEFAULT_CLOUD_CONSENT_MESSAGE = "\n".join(
@@ -225,11 +225,19 @@ class CaptureScopeConsentDialog(QDialog):
         requested_region: dict | None = None,
         requested_application: str = "",
         timeout_seconds: int = 15,
+        title: str = "允许 Agent 本次截图？",
+        heading: str = "允许 Agent 读取一次桌面截图？",
+        message: str = (
+            "截图只在点击允许后采集，内存传输给 Agent，不会由 MeaPet 落盘。\n"
+            "请在下方确定本次的最终范围；Agent 请求的范围不会自动获批。"
+        ),
+        accept_text: str = "允许本次截图",
+        accessible_name: str = "Agent 截图范围确认",
     ) -> None:
         super().__init__(parent)
         ensure_application_fonts()
         self.setObjectName("CaptureScopeConsentRoot")
-        self.setWindowTitle("允许 Agent 本次截图？")
+        self.setWindowTitle(title)
         self.setWindowFlags(
             Qt.Dialog
             | Qt.FramelessWindowHint
@@ -238,9 +246,9 @@ class CaptureScopeConsentDialog(QDialog):
         )
         self.setWindowModality(Qt.ApplicationModal)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setFixedSize(500, 500)
+        self.setFixedWidth(440)
         set_scaled_stylesheet(self, CONSENT_DIALOG_STYLE)
-        self.setAccessibleName("Agent 截图范围确认")
+        self.setAccessibleName(accessible_name)
         self.setAccessibleDescription(
             "最终截图范围由本机用户选择，仅本次有效，超时自动拒绝"
         )
@@ -256,19 +264,17 @@ class CaptureScopeConsentDialog(QDialog):
         card.setObjectName("CloudConsentCard")
         outer.addWidget(card)
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(20, 16, 20, 16)
-        layout.setSpacing(8)
+        layout.setContentsMargins(18, 14, 18, 14)
+        layout.setSpacing(6)
 
         eyebrow = QLabel("隐私保护 · 本次有效 · 默认取消")
         eyebrow.setObjectName("ConsentEyebrow")
         layout.addWidget(eyebrow)
-        title = QLabel("允许 Agent 读取一次桌面截图？")
-        title.setObjectName("ConsentTitle")
-        layout.addWidget(title)
-        body = QLabel(
-            "截图只在点击允许后采集，内存传输给 Agent，不会由 MeaPet 落盘。\n"
-            "请在下方确定本次的最终范围；Agent 请求的范围不会自动获批。"
-        )
+        title_label = QLabel(heading)
+        title_label.setObjectName("ConsentTitle")
+        title_label.setWordWrap(True)
+        layout.addWidget(title_label)
+        body = QLabel(message)
         body.setObjectName("ConsentBody")
         body.setWordWrap(True)
         layout.addWidget(body)
@@ -276,9 +282,10 @@ class CaptureScopeConsentDialog(QDialog):
         scope_label = QLabel("本次截图范围：")
         scope_label.setObjectName("FieldLabel")
         layout.addWidget(scope_label)
-        self.scope_combo = QComboBox()
+        self.scope_combo = WheelSafeComboBox()
         self.scope_combo.setObjectName("CaptureConsentScope")
         self.scope_combo.setAccessibleName("本次截图范围")
+        self.scope_combo.setMinimumHeight(MIN_TARGET_SIZE)
         self.scope_combo.addItem("全部屏幕（默认）", "full_screen")
         self.scope_combo.addItem("矩形区域", "region")
         self.scope_combo.addItem("Windows 应用窗口", "application")
@@ -309,6 +316,7 @@ class CaptureScopeConsentDialog(QDialog):
                 widget.setValue(int(region.get(key, default)))
             except (TypeError, ValueError):
                 widget.setValue(default)
+            widget.setMinimumHeight(MIN_TARGET_SIZE)
             widget.setAccessibleName(f"本次截图区域{label}")
             region_layout.addWidget(QLabel(label), row // 2, (row % 2) * 2)
             region_layout.addWidget(widget, row // 2, (row % 2) * 2 + 1)
@@ -330,12 +338,15 @@ class CaptureScopeConsentDialog(QDialog):
         self.application_input.setObjectName("CaptureConsentApplication")
         self.application_input.setPlaceholderText("例如 Visual Studio Code")
         self.application_input.setAccessibleName("本次截图应用窗口")
+        self.application_input.setMinimumHeight(MIN_TARGET_SIZE)
         application_layout.addWidget(self.application_input)
         layout.addWidget(self.application_frame)
 
         self.validation_label = QLabel("")
-        self.validation_label.setObjectName("ConsentCountdown")
+        self.validation_label.setObjectName("ConsentValidation")
         self.validation_label.setWordWrap(True)
+        self.validation_label.setAccessibleName("截图范围校验提示")
+        self.validation_label.hide()
         layout.addWidget(self.validation_label)
         self.countdown_label = QLabel()
         self.countdown_label.setObjectName("ConsentCountdown")
@@ -343,7 +354,8 @@ class CaptureScopeConsentDialog(QDialog):
         layout.addWidget(self.countdown_label)
 
         buttons = QHBoxLayout()
-        self.allow_button = QPushButton("允许本次截图")
+        buttons.setSpacing(8)
+        self.allow_button = QPushButton(accept_text)
         self.allow_button.setObjectName("AllowUploadButton")
         self.allow_button.setMinimumHeight(MIN_TARGET_SIZE)
         self.allow_button.setAutoDefault(False)
@@ -368,12 +380,27 @@ class CaptureScopeConsentDialog(QDialog):
         self._timer.setInterval(1000)
         self._timer.timeout.connect(self._tick)
         self._update_countdown()
+        self._resize_to_content()
 
     def _sync_scope(self, *_args) -> None:
         scope = self.scope_combo.currentData() or "full_screen"
         self.region_frame.setVisible(scope == "region")
         self.application_frame.setVisible(scope == "application")
         self.validation_label.clear()
+        self.validation_label.hide()
+        self._resize_to_content()
+        # 子控件从可见变隐藏时，Qt 会到下一轮事件循环才刷新窗口
+        # sizeHint；再收缩一次，避免保留上一个范围面板的高度。
+        if self.isVisible():
+            QTimer.singleShot(0, self._resize_to_content)
+
+    def _resize_to_content(self) -> None:
+        """在可选范围字段显隐后收缩窗口，不保留空白占位。"""
+        root_layout = self.layout()
+        if root_layout is not None:
+            root_layout.activate()
+        self.adjustSize()
+        self.resize(self.width(), self.sizeHint().height())
 
     def _update_countdown(self) -> None:
         self.countdown_label.setText(
@@ -405,6 +432,8 @@ class CaptureScopeConsentDialog(QDialog):
             application = self.application_input.text().strip()[:256]
             if not application:
                 self.validation_label.setText("请填写本次要采集的应用窗口标题。")
+                self.validation_label.show()
+                self._resize_to_content()
                 self.application_input.setFocus(Qt.OtherFocusReason)
                 return
         self.approval = CaptureApproval(scope, region, application)
@@ -421,21 +450,65 @@ class CaptureScopeConsentDialog(QDialog):
         super().done(result)
 
     def showEvent(self, event) -> None:
+        self._resize_to_content()
         super().showEvent(event)
-        screen = QApplication.primaryScreen()
         if self.parentWidget() is not None:
             center = self.parentWidget().frameGeometry().center()
-        elif screen is not None:
-            center = screen.availableGeometry().center()
         else:
-            center = None
+            screen = QApplication.primaryScreen()
+            center = screen.availableGeometry().center() if screen is not None else None
         if center is not None:
-            self.move(
-                center.x() - self.width() // 2,
-                center.y() - self.height() // 2,
-            )
+            screen = QApplication.screenAt(center) or QApplication.primaryScreen()
+            x = center.x() - self.width() // 2
+            y = center.y() - self.height() // 2
+            if screen is not None:
+                available = screen.availableGeometry().adjusted(24, 24, -24, -24)
+                max_x = max(available.left(), available.right() - self.width() + 1)
+                max_y = max(available.top(), available.bottom() - self.height() + 1)
+                x = min(max(x, available.left()), max_x)
+                y = min(max(y, available.top()), max_y)
+            self.move(x, y)
         self.cancel_button.setFocus(Qt.OtherFocusReason)
         self._timer.start()
+
+
+class CloudCaptureScopeConsentDialog(CaptureScopeConsentDialog):
+    """云端识图的五秒逐次授权，同时由用户确定本次范围。"""
+
+    def __init__(
+        self,
+        parent=None,
+        *,
+        timeout_seconds: int = 5,
+    ) -> None:
+        super().__init__(
+            parent,
+            requested_scope="full_screen",
+            timeout_seconds=timeout_seconds,
+            title="允许本次云端识图？",
+            heading="允许截取并上传一次桌面画面？",
+            message=(
+                "截图可能包含聊天、密码、邮件、代码等隐私信息。\n"
+                "选择本次范围后，只有点击允许才会截取并上传。"
+            ),
+            accept_text="允许本次上传",
+            accessible_name="云端识图截图范围确认",
+        )
+
+
+def confirm_cloud_capture_scope(
+    parent=None,
+    *,
+    timeout_seconds: int = 5,
+) -> CaptureApproval | None:
+    """返回用户在五秒授权框内选择的本次云端截图范围。"""
+    dialog = CloudCaptureScopeConsentDialog(
+        parent,
+        timeout_seconds=timeout_seconds,
+    )
+    if dialog.exec_() != QDialog.Accepted:
+        return None
+    return dialog.approval
 
 
 def confirm_capture_scope(

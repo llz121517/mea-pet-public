@@ -36,7 +36,6 @@ if sys.platform == "win32":
         win32api = None
         win32con = None
 
-
 class Live2DModel:
     """Live2D 模型控制器，提供与 SpriteRenderer 兼容的接口"""
 
@@ -189,22 +188,15 @@ class Live2DWidget(QOpenGLWidget):
         self.installEventFilter(self)
 
     def eventFilter(self, obj, event):
-        # 仅处理鼠标按下事件（穿透判定）
+        # 窗口不使用 QWidget mask，避免动态模型越过旧边界时被裁断。
         if obj == self and event.type() == QEvent.MouseButtonPress:
-            # 如果是右键，不拦截，用于呼出菜单
             if event.button() == Qt.RightButton:
                 return False
-            # 如果是左键，判断是否点击在模型的非透明区域
-            # （这里可以简单判断坐标，或者通过读取像素判断是否透明）
             x, y = event.x(), event.y()
             w, h = self.width(), self.height()
-            # 简单的矩形碰撞检测 — 扩大范围以适配非100%缩放
             if w * 0.15 < x < w * 0.85 and 0 < y < h * 0.9:
-                return False  # 在模型区域内，不拦截，允许触发 mousePressEvent
-
-            # 在模型区域外，返回 True 拦截事件，让操作系统将其传递给底层窗口
+                return False
             return True
-
         return super().eventFilter(obj, event)
 
     def initializeGL(self):
@@ -337,6 +329,7 @@ class Live2DWidget(QOpenGLWidget):
         self.update()
 
     def mousePressEvent(self, event):
+        
         super().mousePressEvent(event)
         # 仅当左键按下时，记录初始位置
         if event.button() == Qt.LeftButton:

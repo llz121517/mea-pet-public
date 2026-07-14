@@ -4,7 +4,6 @@ from __future__ import annotations
 import os
 import sys
 from collections.abc import Callable
-from pathlib import Path
 
 from PyQt5.QtWidgets import QApplication, QDialog
 from PyQt5.QtCore import QPoint, QRect, QSize, Qt, QTimer
@@ -673,8 +672,8 @@ class PetRenderHostMixin:
                 safe_print(f"[WARN] Win32 window region reset failed: {e}")
 
     def _apply_hit_region(self):
-        # QWidget mask / SetWindowRgn 同时影响鼠标和可见内容；透明像素的
-        # 精细命中应由控件事件处理，正常显示阶段始终保留完整绘制表面。
+        # QWidget mask / SetWindowRgn 会同时裁掉绘制与鼠标区域。Live2D
+        # 动作会越过上一帧包围盒，因此始终保留完整透明绘制表面。
         self._clear_window_region()
 
     def _toggle_standby(self):
