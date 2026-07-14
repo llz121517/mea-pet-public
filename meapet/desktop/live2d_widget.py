@@ -7,7 +7,6 @@ from __future__ import annotations
 import os
 import sys
 import math
-import numpy as np #等着你这个死边框
 import traceback
 from pathlib import Path
 
@@ -36,11 +35,6 @@ if sys.platform == "win32":
     except Exception:
         win32api = None
         win32con = None
-
-from PyQt5.QtGui import QBitmap, QRegion, QImage, qAlpha
-from PyQt5.QtCore import Qt
-
-
 
 class Live2DModel:
     """Live2D 模型控制器，提供与 SpriteRenderer 兼容的接口"""
@@ -142,7 +136,6 @@ class Live2DWidget(QOpenGLWidget):
     chat_requested = pyqtSignal()
     first_frame_ready = pyqtSignal()
     initialization_failed = pyqtSignal(str)
-    tight_bounds_ready = pyqtSignal(int, int, int, int)  # x, y, w, h 紧密包围盒
 
     def __init__(self, l2d_model: Live2DModel, parent=None):
         super().__init__(parent)
@@ -172,7 +165,6 @@ class Live2DWidget(QOpenGLWidget):
         self._initialization_error = ""
         self._frame_drawn = False
         self._first_frame_emitted = False
-        self._tight_bounds_emitted = False
         self._drag_target = (0.0, 0.0)  # 眼球追踪坐标（每帧更新）
         self._global_filter_installed = False
         self._timer = QTimer(self)
@@ -189,23 +181,22 @@ class Live2DWidget(QOpenGLWidget):
         self._drag_pointer_origin = None
         self._drag_window_origin = None
 
-        #添加计数器
-        self._mask_update_counter = 0
-        self._mask_update_interval = 30
-
         self.resize(525, 735)
 
         # 3. 【删除】这行代码，否则鼠标事件无法触发
         # self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.installEventFilter(self)
 
-        self._mask_timer = QTimer(self)
-        self._mask_timer.timeout.connect(self._update_dynamic_mask)     # 低频更新mask
-        self._mask_timer.start(300)
-
     def eventFilter(self, obj, event):
-        # 【修复】移除强制拦截逻辑。
-        # 鼠标事件的穿透由操作系统的 setMask 决定，Qt 内部不应该再吞掉事件。
+        # 窗口不使用 QWidget mask，避免动态模型越过旧边界时被裁断。
+        if obj == self and event.type() == QEvent.MouseButtonPress:
+            if event.button() == Qt.RightButton:
+                return False
+            x, y = event.x(), event.y()
+            w, h = self.width(), self.height()
+            if w * 0.15 < x < w * 0.85 and 0 < y < h * 0.9:
+                return False
+            return True
         return super().eventFilter(obj, event)
 
     def initializeGL(self):
@@ -324,7 +315,6 @@ class Live2DWidget(QOpenGLWidget):
             self.l2d.model.SetParameterValue("ParamBodyAngleZ", cx * 10, 1.0)
             self.l2d.model.SetParameterValue("ParamAngleZ", cx * 10, 1.0)
 
-        glClearColor(1.0, 0.0, 0.0, 0.3)
         self.l2d.model.Update()
         self.l2d.model.Draw()
         self._frame_drawn = True
@@ -334,90 +324,6 @@ class Live2DWidget(QOpenGLWidget):
         if self._frame_drawn and not self._first_frame_emitted:
             self._first_frame_emitted = True
             self.first_frame_ready.emit()
-    def _update_dynamic_mask(self):
-        """基于 NumPy 降采样的极速动态包围盒计算"""
-        if not self._ready or not self.l2d.model:
-            return
-
-        try:
-            w, h = self.width(), self.height()
-            if w <= 10 or h <= 10:
-                return
-
-            # 1. 抓取当前帧 (GPU -> CPU)
-            # 注意：虽然 grabFramebuffer 有开销，但我们接下来会把它缩小，所以影响可控
-            full_img = self.grabFramebuffer()
-            # full_img.save("debug_grab_frame.png")
-            if full_img.isNull():
-                return
-
-            # 2. 【核心优化】降采样 (Downsampling)
-            # 将图像缩小到宽度只有 120 像素左右。
-            # 这会让像素数量减少几十倍，极大降低后续计算和回读的开销！
-            target_w = 120
-            scale_ratio = target_w / w
-            target_h = int(h * scale_ratio)
-        
-            small_img = full_img.scaled(target_w, target_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-        
-            # 转换为 ARGB32 以便读取内存
-            if small_img.format() != QImage.Format_ARGB32:
-                small_img = small_img.convertToFormat(QImage.Format_ARGB32)
-
-            # 3. 使用 NumPy 极速提取 Alpha 通道
-            # 将 QImage 的内存直接映射为 NumPy 数组，零拷贝，速度极快
-            ptr = small_img.bits()
-            ptr.setsize(target_h * target_w * 4)
-            # ARGB32 在内存中是 B, G, R, A (小端序)，我们只取第 4 个通道 (Alpha)
-            arr = np.frombuffer(ptr, dtype=np.uint8).reshape((target_h, target_w, 4))
-            alpha_channel = arr[:, :, 3] 
-
-            # 修复：不同尺寸下Alpha值变化
-            dynamic_threshold = int(np.max(alpha_channel) * 0.1)
-
-            # 4. 找出 Alpha > 50 的像素的边界 (50 是容差，过滤掉半透明抗锯齿边缘)
-            # np.any 是 C 语言级别的循环，比 Python for 循环快成百上千倍
-            rows_with_content = np.any(alpha_channel > dynamic_threshold, axis=1)
-            cols_with_content = np.any(alpha_channel > dynamic_threshold, axis=0)
-
-            if not np.any(rows_with_content) or not np.any(cols_with_content):
-                # 如果整张图都是透明的，清空 Mask
-                self.clearMask()
-                return
-
-            # 获取小图上的包围盒坐标
-            rmin, rmax = np.where(rows_with_content)[0][[0, -1]]
-            cmin, cmax = np.where(cols_with_content)[0][[0, -1]]
-
-            # 5. 映射回原始窗口尺寸
-            real_x = int(cmin / scale_ratio)
-            real_y = int(rmin / scale_ratio)
-            real_w = int((cmax - cmin) / scale_ratio)
-            real_h = int((rmax - rmin) / scale_ratio)
-
-            # 6. 【关键】向外扩展余量 (Padding)
-            # 因为模型会动，300ms 内模型可能会有位移或形变，留出余量防止点击失效
-            pad_x = max(5, int(real_w * 0.03))  # 左右留 3%，最小 5px
-            pad_y = max(5, int(real_h * 0.03))  # 上下留 3%，最小 5px
-        
-            final_x = max(0, real_x - pad_x)
-            final_y = max(0, real_y - pad_y)
-            final_w = min(w - final_x, real_w + 2 * pad_x)
-            final_h = min(h - final_y, real_h + 2 * pad_y)
-
-            self._render_rect = (final_x, final_y, final_w, final_h)
-
-            # 8. 通知父窗口裁切 (仅首次)
-            if not self._tight_bounds_emitted:
-                self._tight_bounds_emitted = True
-                QTimer.singleShot(0, lambda: self.tight_bounds_ready.emit(
-                    final_x, final_y, final_w, final_h
-                ))
-
-        except Exception as e:
-            log.warn(f"[Live2D] 动态掩码更新失败: {e}")
-            # 失败时保底使用整个窗口，防止模型消失
-            self.setMask(QRegion(0, 0, self.width(), self.height()))
 
     def _on_timer(self):
         self.update()

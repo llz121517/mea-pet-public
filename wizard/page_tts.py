@@ -1,28 +1,22 @@
 """配置向导各页面"""
 from __future__ import annotations
 
-import json
 import os
-import re
-import sys
-import threading
-import time
-import urllib.request
-from typing import Optional, Dict, Any, List
 
-from PyQt5.QtWidgets import *
-from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject, QSize, QUrl
-from PyQt5.QtGui import *
+from PyQt5.QtWidgets import (
+    QCheckBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QVBoxLayout,
+)
 
 from wizard.styles import (
-    STYLE_INPUT, STYLE_BTN_PRIMARY, STYLE_BTN_SECONDARY,
-    COLOR_BG, COLOR_CARD, COLOR_ACCENT, COLOR_TEXT, COLOR_OK, COLOR_WARN, COLOR_ERR,
-    MIN_TARGET_SIZE, STYLE_PAGE_CARD,
-)
-from wizard.platform_info import PLATFORM, CONFIG_PATH, platform_checklist, ollama_install_hint, detect_platform
-from wizard.env_utils import (
-    WorkerSignals, pip_install, check_installed, download_file,
-    check_ollama_running, check_ollama_installed, pull_ollama_model,
+    MIN_TARGET_SIZE,
+    STYLE_INPUT,
+    STYLE_PAGE_CARD,
 )
 
 # 兼容页面内可能使用的短名
@@ -30,6 +24,7 @@ from wizard.page_tts_gsv import TtsPageGsvMixin
 from wizard.page_tts_mimo import TtsPageMimoMixin
 from wizard.page_tts_vits import TtsPageVitsMixin
 from meapet.config.normalizers import normalize_gsv_ref_language
+from wizard.widgets import WheelSafeComboBox
 
 
 class TTSPage(TtsPageGsvMixin, TtsPageMimoMixin, TtsPageVitsMixin, QFrame):
@@ -58,9 +53,22 @@ class TTSPage(TtsPageGsvMixin, TtsPageMimoMixin, TtsPageVitsMixin, QFrame):
         tts_hint.setWordWrap(True)
         layout.addWidget(tts_hint)
 
+        test_row = QHBoxLayout()
+        self.test_connection_btn = QPushButton("测试当前语音引擎")
+        self.test_connection_btn.setAccessibleName("测试当前语音引擎连接")
+        self.test_connection_btn.setProperty("doesNotModifyConfig", True)
+        test_row.addWidget(self.test_connection_btn)
+        self.connection_status = QLabel("尚未测试；测试会合成一句短音频")
+        self.connection_status.setProperty("status", "muted")
+        self.connection_status.setAccessibleName("语音引擎连接测试状态")
+        self.connection_status.setWordWrap(True)
+        test_row.addWidget(self.connection_status, 1)
+        layout.addLayout(test_row)
+
         self.engine_details_toggle = QCheckBox("显示引擎详细设置")
         self.engine_details_toggle.setChecked(False)
         self.engine_details_toggle.setAccessibleName("显示引擎详细设置")
+        self.engine_details_toggle.setProperty("doesNotModifyConfig", True)
         self.engine_details_toggle.setToolTip("关闭后只保留总开关，适合先开玩再细调")
         self.engine_details_toggle.toggled.connect(self._sync_engine_details_visibility)
         layout.addWidget(self.engine_details_toggle)
@@ -70,7 +78,7 @@ class TTSPage(TtsPageGsvMixin, TtsPageMimoMixin, TtsPageVitsMixin, QFrame):
         self.backend_label.setObjectName("FieldLabel")
         layout.addWidget(self.backend_label)
 
-        self.backend_combo = QComboBox()
+        self.backend_combo = WheelSafeComboBox()
         self.backend_combo.setObjectName("TtsEngine")
         self.backend_combo.setAccessibleName("语音引擎")
         self.backend_combo.addItem("MiMo 云端 TTS（推荐：无需本地模型，用 API Key）", "mimo")
@@ -150,7 +158,7 @@ class TTSPage(TtsPageGsvMixin, TtsPageMimoMixin, TtsPageVitsMixin, QFrame):
         language_label = QLabel("默认合成语言：")
         language_label.setObjectName("FieldLabel")
         lang_row.addWidget(language_label)
-        self.mimo_voice_lang_combo = QComboBox()
+        self.mimo_voice_lang_combo = WheelSafeComboBox()
         self.mimo_voice_lang_combo.setObjectName("MimoVoiceLanguage")
         self.mimo_voice_lang_combo.setAccessibleName("语音合成语言")
         # 默认日语（梅尔日语人设）；中文/英文可选
@@ -321,11 +329,7 @@ class TTSPage(TtsPageGsvMixin, TtsPageMimoMixin, TtsPageVitsMixin, QFrame):
             self.gsv_reference_inputs[language] = ref_input
             self.gsv_reference_buttons[language] = ref_browse_btn
 
-        self._schedule_startup(300, self._check_gsv)
         layout.addWidget(self.gsv_container)
-
-        # 初始调用后端切换（默认 VITS 模式）
-        self._schedule_startup(100, self._toggle_backend)
 
         packaged_hint = QLabel("语音模型已打包，开箱即用。")
         packaged_hint.setObjectName("HelperText")
@@ -352,7 +356,7 @@ class TTSPage(TtsPageGsvMixin, TtsPageMimoMixin, TtsPageVitsMixin, QFrame):
         target_label = QLabel("翻译目标语言：")
         target_label.setObjectName("FieldLabel")
         target_row.addWidget(target_label)
-        self.translate_target_combo = QComboBox()
+        self.translate_target_combo = WheelSafeComboBox()
         self.translate_target_combo.setObjectName("TtsTranslationTargetLanguage")
         self.translate_target_combo.setAccessibleName("TTS 翻译目标语言")
         self.translate_target_combo.addItem("日语", "jp")
@@ -379,17 +383,8 @@ class TTSPage(TtsPageGsvMixin, TtsPageMimoMixin, TtsPageVitsMixin, QFrame):
 
         layout.addStretch()
         self._tl_widgets = []
-
-
-        self._schedule_startup(500, self._check_gsv)
-
-    def _schedule_startup(self, delay_ms: int, callback) -> None:
-        """创建随页面销毁的单次启动计时器，避免关闭后回调已删除控件。"""
-        timer = QTimer(self)
-        timer.setSingleShot(True)
-        timer.timeout.connect(callback)
-        timer.start(delay_ms)
-        self._startup_timers.append(timer)
+        # 首帧只同步控件显隐；GSV 子进程探测改由用户点击连接测试触发。
+        self._toggle_backend()
 
     def log(self, msg):
         """日志输出（TTSPage 版本）"""
@@ -406,6 +401,7 @@ class TTSPage(TtsPageGsvMixin, TtsPageMimoMixin, TtsPageVitsMixin, QFrame):
 
     def _toggle(self, on):
         """语音启用/禁用"""
+        self.test_connection_btn.setEnabled(bool(on))
         self.backend_combo.setEnabled(on)
         self.vits_python_input.setEnabled(on)
         self.gsv_dir_input.setEnabled(on)

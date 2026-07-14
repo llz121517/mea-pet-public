@@ -457,11 +457,20 @@ class ScreenWatcher(QThread):
             )
             ratio = 1280 / max(1, image.width)
             if ratio < 1.0:
-                img = image.resize((320, int(image.height * ratio)))
-            buf = io.BytesIO()
-            img.convert('RGB').save(buf, format="JPEG", quality=50)
-            b64 = base64.b64encode(buf.getvalue()).decode()
-            log.info(f"[screenshot] encoded base64 length={len(b64)}")
+                image = image.resize(
+                    (1280, max(1, int(image.height * ratio)))
+                )
+            buffer = io.BytesIO()
+            image.convert("RGB").save(buffer, format="JPEG", quality=72)
+            encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+            attachment = ImageAttachment(
+                media_type="image/jpeg",
+                data=encoded,
+                file_name="screenshot.jpg",
+            )
+            log.info(
+                f"[screenshot] encoded base64 length={len(encoded)}"
+            )
 
             if self._stop:
                 return
@@ -469,11 +478,6 @@ class ScreenWatcher(QThread):
             coordinator = VisionCoordinator(self._reply_adapter)
             self.progress.emit(STAGE_SUMMARY)
             if self.mode == "inherit":
-                attachment = ImageAttachment(
-                    image=image,
-                    base64=b64,
-                    mime_type="image/jpeg",
-                )
                 operation = coordinator.inherit(
                     attachment,
                     idle_minutes=self.idle_minutes,
@@ -481,7 +485,7 @@ class ScreenWatcher(QThread):
                     tts_enabled=self._tts_enabled,
                 )
             elif self.mode == "relay":
-                raw_observation = self._request_visual_observation(b64)
+                raw_observation = self._request_visual_observation(encoded)
                 observation = parse_vision_observation(raw_observation)
                 if observation is None:
                     raise RuntimeError("视觉模型未返回可用观察")

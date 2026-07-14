@@ -1,34 +1,42 @@
 """配置向导各页面"""
 from __future__ import annotations
 
-import json
-import os
-import re
-import sys
 import threading
-import time
-import urllib.request
-from typing import Optional, Dict, Any, List
 
-from PyQt5.QtWidgets import *
-from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject, QSize, QUrl
-from PyQt5.QtGui import *
+from PyQt5.QtCore import QTimer, pyqtSignal
+from PyQt5.QtWidgets import (
+    QDoubleSpinBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QRadioButton,
+    QSpinBox,
+    QVBoxLayout,
+)
 
 from wizard.styles import (
-    STYLE_INPUT, STYLE_BTN_PRIMARY, STYLE_BTN_SECONDARY,
-    COLOR_BG, COLOR_CARD, COLOR_ACCENT, COLOR_TEXT, COLOR_OK, COLOR_WARN, COLOR_ERR,
-    STYLE_PAGE_CARD, set_status,
+    STYLE_INPUT,
+    STYLE_PAGE_CARD,
+    set_status,
 )
-from wizard.platform_info import PLATFORM, CONFIG_PATH, platform_checklist, ollama_install_hint, detect_platform
 from wizard.env_utils import (
-    WorkerSignals, pip_install, check_installed, download_file,
-    check_ollama_running, check_ollama_installed, pull_ollama_model,
+    check_ollama_installed,
+    check_ollama_running,
 )
+from wizard.widgets import WheelSafeComboBox
 
 # 兼容页面内可能使用的短名
 class LLMPage(QFrame):
+    ollama_probe_finished = pyqtSignal(bool, bool, object)
+
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._provider_drafts = {}
+        self._active_provider = None
+        self._suspend_provider_switch = False
+        self._ollama_probe_running = False
         self.setObjectName("PageCard")
         self.setStyleSheet(STYLE_PAGE_CARD)
         layout = QVBoxLayout(self)
@@ -55,6 +63,8 @@ class LLMPage(QFrame):
         ollama_detail.setObjectName("HelperText")
         ollama_detail.setWordWrap(True)
         layout.addWidget(ollama_detail)
+        self.provider_settings_hosts = {}
+        self._add_provider_settings_host(layout, "ollama")
 
         # DeepSeek
         self.radio_ds = QRadioButton("DeepSeek API（在线、速度快）")
@@ -68,6 +78,7 @@ class LLMPage(QFrame):
         deepseek_detail.setObjectName("HelperText")
         deepseek_detail.setWordWrap(True)
         layout.addWidget(deepseek_detail)
+        self._add_provider_settings_host(layout, "deepseek")
 
         # MiMo V2.5
         self.radio_mimo = QRadioButton("MiMo V2.5（小米多模态 API，在线、可识图）")
@@ -81,6 +92,7 @@ class LLMPage(QFrame):
         mimo_detail.setObjectName("HelperText")
         mimo_detail.setWordWrap(True)
         layout.addWidget(mimo_detail)
+        self._add_provider_settings_host(layout, "mimo")
 
         # 自定义模型服务商仍属于 direct，不把 OpenAI-compatible 端点伪装成 Agent。
         self.radio_custom = QRadioButton("自定义模型接口（直连）")
@@ -88,6 +100,7 @@ class LLMPage(QFrame):
             "填写实际协议、地址、模型和鉴权信息"
         )
         layout.addWidget(self.radio_custom)
+        self._add_provider_settings_host(layout, "custom")
 
         self.direct_settings = QFrame()
         self.direct_settings.setObjectName("SectionCard")
@@ -98,7 +111,7 @@ class LLMPage(QFrame):
         protocol_label = QLabel("接口协议：")
         protocol_label.setObjectName("FieldLabel")
         direct_layout.addWidget(protocol_label)
-        self.protocol_combo = QComboBox()
+        self.protocol_combo = WheelSafeComboBox()
         self.protocol_combo.setObjectName("DirectProtocol")
         self.protocol_combo.setAccessibleName("直连接口协议")
         self.protocol_combo.addItem("Ollama Chat", "ollama_chat")
@@ -125,19 +138,39 @@ class LLMPage(QFrame):
         self.model_input.setAccessibleName("直连模型 ID")
         direct_layout.addWidget(self.model_input)
 
-        key_label = QLabel("API Key / 环境变量占位符（可空）：")
-        key_label.setObjectName("FieldLabel")
-        direct_layout.addWidget(key_label)
+        self.direct_key_label = QLabel(
+            "API Key / 环境变量占位符（可空）："
+        )
+        self.direct_key_label.setObjectName("FieldLabel")
+        direct_layout.addWidget(self.direct_key_label)
         self.direct_api_key_input = QLineEdit()
         self.direct_api_key_input.setObjectName("DirectApiKey")
         self.direct_api_key_input.setStyleSheet(STYLE_INPUT)
         self.direct_api_key_input.setEchoMode(QLineEdit.Password)
         self.direct_api_key_input.setAccessibleName("直连 API Key")
+        self.direct_api_key_input.setAccessibleDescription(
+            "凭据只会保存到本机配置文件，也可填写环境变量占位符"
+        )
         self.direct_api_key_input.setPlaceholderText("例如 $MEAPET_API_KEY")
-        direct_layout.addWidget(self.direct_api_key_input)
+        key_row = QHBoxLayout()
+        key_row.addWidget(self.direct_api_key_input, 1)
+        self.direct_api_key_visibility = QPushButton("显示 Key")
+        self.direct_api_key_visibility.setCheckable(True)
+        self.direct_api_key_visibility.setAccessibleName("显示直连 API Key")
+        self.direct_api_key_visibility.setProperty(
+            "doesNotModifyConfig",
+            True,
+        )
+        self.direct_api_key_visibility.toggled.connect(
+            self._toggle_api_key_visibility
+        )
+        key_row.addWidget(self.direct_api_key_visibility)
+        direct_layout.addLayout(key_row)
 
         tuning = QHBoxLayout()
-        tuning.addWidget(QLabel("temperature"))
+        temperature_label = QLabel("回复随机性：")
+        temperature_label.setObjectName("FieldLabel")
+        tuning.addWidget(temperature_label)
         self.temperature_input = QDoubleSpinBox()
         self.temperature_input.setObjectName("DirectTemperature")
         self.temperature_input.setAccessibleName("直连 temperature")
@@ -146,22 +179,44 @@ class LLMPage(QFrame):
         self.temperature_input.setSingleStep(0.05)
         self.temperature_input.setValue(0.7)
         tuning.addWidget(self.temperature_input)
-        tuning.addWidget(QLabel("max tokens"))
+        max_tokens_label = QLabel("最大回复长度（tokens）：")
+        max_tokens_label.setObjectName("FieldLabel")
+        tuning.addWidget(max_tokens_label)
         self.max_tokens_input = QSpinBox()
         self.max_tokens_input.setObjectName("DirectMaxTokens")
         self.max_tokens_input.setAccessibleName("直连最大输出 token")
         self.max_tokens_input.setRange(1, 1_000_000)
-        self.max_tokens_input.setValue(512)
+        self.max_tokens_input.setValue(4096)
         tuning.addWidget(self.max_tokens_input)
         tuning.addStretch()
         direct_layout.addLayout(tuning)
-        layout.addWidget(self.direct_settings)
+        tuning_hint = QLabel(
+            "回复随机性越高，措辞越多变；最大回复长度会直接写入模型请求，"
+            "数值越大越不容易截断，也可能增加耗时与费用。"
+        )
+        tuning_hint.setObjectName("HelperText")
+        tuning_hint.setWordWrap(True)
+        direct_layout.addWidget(tuning_hint)
+
+        test_row = QHBoxLayout()
+        self.test_connection_btn = QPushButton("测试模型连接")
+        self.test_connection_btn.setAccessibleName("测试直连模型连接")
+        self.test_connection_btn.setProperty("doesNotModifyConfig", True)
+        test_row.addWidget(self.test_connection_btn)
+        self.connection_status = QLabel("尚未测试")
+        self.connection_status.setProperty("status", "muted")
+        self.connection_status.setAccessibleName("直连模型连接测试状态")
+        self.connection_status.setWordWrap(True)
+        test_row.addWidget(self.connection_status, 1)
+        direct_layout.addLayout(test_row)
 
         # Ollama 状态
         self.ollama_status = QLabel("")
         self.ollama_status.setProperty("status", "muted")
         self.ollama_status.setAccessibleName("Ollama 运行状态")
-        layout.addWidget(self.ollama_status)
+        self.provider_settings_hosts["ollama"].layout().addWidget(
+            self.ollama_status
+        )
 
         layout.addStretch()
         for radio in (
@@ -171,17 +226,67 @@ class LLMPage(QFrame):
             self.radio_custom,
         ):
             radio.toggled.connect(self._on_provider_selected)
+        self.ollama_probe_finished.connect(self._apply_ollama_status)
         self._on_provider_selected()
         self._status_timer = QTimer(self)
         self._status_timer.setSingleShot(True)
         self._status_timer.timeout.connect(self._refresh_ollama_status)
         self._status_timer.start(100)
 
+    def _add_provider_settings_host(self, layout: QVBoxLayout, provider: str) -> None:
+        host = QFrame()
+        host.setObjectName(f"{provider.title()}ProviderSettingsHost")
+        host_layout = QVBoxLayout(host)
+        host_layout.setContentsMargins(0, 0, 0, 0)
+        host_layout.setSpacing(0)
+        layout.addWidget(host)
+        self.provider_settings_hosts[provider] = host
+
+    def _move_direct_settings(self, provider: str) -> None:
+        target = self.provider_settings_hosts.get(provider)
+        if target is None:
+            return
+        for host in self.provider_settings_hosts.values():
+            host.layout().removeWidget(self.direct_settings)
+        self.direct_settings.setParent(target)
+        target.layout().addWidget(self.direct_settings)
+        if provider == "ollama" and hasattr(self, "ollama_status"):
+            target.layout().removeWidget(self.ollama_status)
+            target.layout().addWidget(self.ollama_status)
+        if hasattr(self, "ollama_status"):
+            self.ollama_status.setVisible(provider == "ollama")
+        self.direct_settings.show()
+
     def _refresh_ollama_status(self):
+        """后台探测 Ollama，配置页打开时不阻塞 Qt 事件循环。"""
+        if self._ollama_probe_running:
+            return
+        self._ollama_probe_running = True
+        thread = threading.Thread(
+            target=self._probe_ollama_status,
+            name="meapet-wizard-ollama-check",
+            daemon=True,
+        )
+        thread.start()
+
+    def _probe_ollama_status(self) -> None:
         running, models = check_ollama_running()
         installed = check_ollama_installed()
+        try:
+            self.ollama_probe_finished.emit(running, installed, models)
+        except RuntimeError:
+            return
+
+    def _apply_ollama_status(
+        self,
+        running: bool,
+        installed: bool,
+        models: object,
+    ) -> None:
+        self._ollama_probe_running = False
         if running:
-            m = ", ".join(models[:3])
+            model_list = list(models) if isinstance(models, (list, tuple)) else []
+            m = ", ".join(str(model) for model in model_list[:3])
             set_status(self.ollama_status, "success", f"Ollama 运行中（模型：{m}）")
         elif installed:
             set_status(self.ollama_status, "warning", "Ollama 已安装但未运行，启动后再继续")
@@ -216,56 +321,121 @@ class LLMPage(QFrame):
     def _on_provider_selected(self, checked: bool = True) -> None:
         if not checked:
             return
-        provider = self.get_backend()
-        presets = {
-            "ollama": (
-                "ollama_chat",
-                "http://127.0.0.1:11434",
-                "qwen3.5:4b",
-            ),
-            "deepseek": (
-                "openai_chat",
-                "https://api.deepseek.com/v1",
-                "deepseek-v4-flash",
-            ),
-            "mimo": (
-                "openai_chat",
-                "https://api.xiaomimimo.com/v1",
-                "mimo-v2.5",
-            ),
-        }
-        if provider not in presets:
+        if self._suspend_provider_switch:
             return
-        protocol, endpoint, model = presets[provider]
+        provider = self.get_backend()
+        if self._active_provider == provider:
+            return
+        if self._active_provider:
+            self._provider_drafts[self._active_provider] = (
+                self.collect_direct_profile()
+            )
+        profile = self._provider_drafts.get(provider)
+        if profile is None:
+            profile = self._default_profile(provider)
+        self._apply_profile_fields(profile)
+        self._sync_provider_copy(provider)
+        self._move_direct_settings(provider)
+        self._active_provider = provider
+
+    def _sync_provider_copy(self, provider: str) -> None:
+        required = provider in {"deepseek", "mimo"}
+        suffix = "必填" if required else "可空"
+        self.direct_key_label.setText(
+            f"API Key / 环境变量占位符（{suffix}）："
+        )
+
+    @staticmethod
+    def _default_profile(provider: str) -> dict:
+        presets = {
+            "ollama": {
+                "protocol": "ollama_chat",
+                "endpoint": "http://127.0.0.1:11434",
+                "model": "qwen3.5:4b",
+            },
+            "deepseek": {
+                "protocol": "openai_chat",
+                "endpoint": "https://api.deepseek.com/v1",
+                "model": "deepseek-v4-flash",
+            },
+            "mimo": {
+                "protocol": "openai_chat",
+                "endpoint": "https://api.xiaomimimo.com/v1",
+                "model": "mimo-v2.5",
+            },
+            "custom": {
+                "protocol": "openai_chat",
+                "endpoint": "",
+                "model": "",
+            },
+        }
+        preset = presets.get(provider, presets["custom"])
+        protocol = preset["protocol"]
+        endpoint = preset["endpoint"]
+        return {
+            "provider": provider,
+            "protocol": protocol,
+            "api_base": "" if protocol == "ollama_chat" else endpoint,
+            "host": endpoint if protocol == "ollama_chat" else "",
+            "model": preset["model"],
+            "api_key": "",
+            "temperature": 0.7,
+            "max_tokens": 4096,
+        }
+
+    def _apply_profile_fields(self, profile: dict) -> None:
+        protocol = str(profile.get("protocol") or "openai_chat")
         self.set_protocol(protocol)
-        self.endpoint_input.setText(endpoint)
-        self.model_input.setText(model)
-
-    def set_protocol(self, protocol: str) -> None:
-        index = self.protocol_combo.findData(str(protocol or "").strip())
-        if index >= 0:
-            self.protocol_combo.setCurrentIndex(index)
-
-    def apply_direct_profile(self, profile: dict) -> None:
-        profile = profile or {}
-        self.set_backend(profile.get("provider", "ollama"))
-        self.set_protocol(profile.get("protocol", "ollama_chat"))
         endpoint = (
             profile.get("host")
-            if profile.get("protocol") == "ollama_chat"
+            if protocol == "ollama_chat"
             else profile.get("api_base")
         )
         self.endpoint_input.setText(str(endpoint or ""))
         self.model_input.setText(str(profile.get("model") or ""))
         self.direct_api_key_input.setText(str(profile.get("api_key") or ""))
         try:
-            self.temperature_input.setValue(float(profile.get("temperature", 0.7)))
+            self.temperature_input.setValue(
+                float(profile.get("temperature", 0.7))
+            )
         except (TypeError, ValueError):
             self.temperature_input.setValue(0.7)
         try:
-            self.max_tokens_input.setValue(int(profile.get("max_tokens", 512)))
+            self.max_tokens_input.setValue(
+                int(profile.get("max_tokens", 4096))
+            )
         except (TypeError, ValueError):
-            self.max_tokens_input.setValue(512)
+            self.max_tokens_input.setValue(4096)
+
+    def set_protocol(self, protocol: str) -> None:
+        index = self.protocol_combo.findData(str(protocol or "").strip())
+        if index >= 0:
+            self.protocol_combo.setCurrentIndex(index)
+
+    def _toggle_api_key_visibility(self, visible: bool) -> None:
+        self.direct_api_key_input.setEchoMode(
+            QLineEdit.Normal if visible else QLineEdit.Password
+        )
+        self.direct_api_key_visibility.setText(
+            "隐藏 Key" if visible else "显示 Key"
+        )
+        self.direct_api_key_visibility.setAccessibleName(
+            "隐藏直连 API Key" if visible else "显示直连 API Key"
+        )
+
+    def apply_direct_profile(self, profile: dict) -> None:
+        profile = profile or {}
+        self._suspend_provider_switch = True
+        try:
+            self.set_backend(profile.get("provider", "ollama"))
+            self._apply_profile_fields(profile)
+            provider = self.get_backend()
+            self._sync_provider_copy(provider)
+            self._move_direct_settings(provider)
+            self._active_provider = provider
+            self._provider_drafts[provider] = self.collect_direct_profile()
+        finally:
+            self._suspend_provider_switch = False
 
     def collect_direct_profile(self, api_key: str = "") -> dict:
         protocol = self.protocol_combo.currentData() or "openai_chat"
@@ -280,8 +450,3 @@ class LLMPage(QFrame):
             "temperature": self.temperature_input.value(),
             "max_tokens": self.max_tokens_input.value(),
         }
-
-
-# ═══════════════════════════════════════
-# 页面：API Key
-# ═══════════════════════════════════════
