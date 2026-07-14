@@ -4,7 +4,6 @@ from __future__ import annotations
 import os
 import sys
 from collections.abc import Callable
-from pathlib import Path
 
 from PyQt5.QtWidgets import QApplication, QDialog
 from PyQt5.QtCore import QPoint, QRect, QSize, Qt, QTimer
@@ -478,6 +477,11 @@ class PetRenderHostMixin:
         self._l2d_model = Live2DModel(model_dir)
         widget = self._l2d_model.create_widget(self)
         self.sprite_label = widget
+
+        # 【新增】强制父窗口透明，否则 SetWindowRgn 裁掉的区域会露出系统底色
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setStyleSheet("background: transparent; border: none;")
+
         widget.head_patted.connect(self._on_head_patted)
         widget.tail_patted.connect(self._on_tail_patted)
         widget.chat_requested.connect(self._start_chat)
@@ -485,6 +489,7 @@ class PetRenderHostMixin:
         widget.initialization_failed.connect(
             self._on_live2d_initialization_failed
         )
+        widget.tight_bounds_ready.connect(self._on_live2d_tight_bounds)
         w0, h0 = self._scaled_live2d_size(self._size_factor)
         widget.move(0, 0)
         widget.resize(w0, h0)
@@ -563,6 +568,7 @@ class PetRenderHostMixin:
         self._size_factor = factor
         if self._use_live2d and self.sprite_label:
             self._clear_window_region()
+            self._live2d_tight_bounds = None  # 清除缓存，允许重新计算
             new_w, new_h = self._scaled_live2d_size(factor)
             self.sprite_label.resize(new_w, new_h)
             self.resize(new_w, new_h)
@@ -579,6 +585,8 @@ class PetRenderHostMixin:
             self._update_sprite()
             self._apply_hit_region()
             QApplication.processEvents()
+        if hasattr(self.sprite_label, '_tight_bounds_emitted'):
+            self.sprite_label._tight_bounds_emitted = False
         self._position_bubble()
 
     def _open_size_dialog(self):
@@ -673,9 +681,56 @@ class PetRenderHostMixin:
                 safe_print(f"[WARN] Win32 window region reset failed: {e}")
 
     def _apply_hit_region(self):
-        # QWidget mask / SetWindowRgn 同时影响鼠标和可见内容；透明像素的
-        # 精细命中应由控件事件处理，正常显示阶段始终保留完整绘制表面。
-        self._clear_window_region()
+        if self._use_live2d:
+            tb = getattr(self, '_live2d_tight_bounds', None)
+            if tb is not None:
+                self._set_rect_region(*tb)
+            else:
+                self._set_elliptic_region()
+        else:
+            # PNG 模式保持完整矩形区域
+            self._clear_window_region()
+
+    def _set_elliptic_region(self):
+        """将桌面窗口裁剪为椭圆，使视觉与鼠标触控范围同时匹配。"""
+        w = self.width()
+        h = self.height()
+        if w < 1 or h < 1:
+            return
+        if sys.platform == "win32":
+            try:
+                import win32gui
+                rgn = win32gui.CreateEllipticRgn(0, 0, w, h)
+                if rgn:
+                    win32gui.SetWindowRgn(int(self.winId()), rgn, True)
+            except Exception as e:
+                safe_print(f"[WARN] Win32 elliptic region failed: {e}")
+                self._clear_window_region()
+        else:
+            try:
+                region = QRegion(QRect(0, 0, w, h), QRegion.Ellipse)
+                self.setMask(region)
+            except Exception as e:
+                safe_print(f"[WARN] QRegion elliptic mask failed: {e}")
+                self._clear_window_region()
+
+    def _on_live2d_tight_bounds(self, bx: int, by: int, bw: int, bh: int):
+        """用像素级紧密矩形替代椭圆区域，消除透明边框。"""
+        if bw < 20 or bh < 20:
+            return
+        self._live2d_tight_bounds = (bx, by, bw, bh)
+        self._set_rect_region(bx, by, bw, bh)
+
+    def _set_rect_region(self, bx: int, by: int, bw: int, bh: int):
+        """将窗口裁剪为紧密矩形区域。"""
+        try:
+            # 【修改】统一使用 Qt 原生的 setMask，废弃 win32gui.SetWindowRgn
+            # Qt 底层会自动处理 Windows 的 WS_EX_LAYERED 和 DWM 兼容问题
+            region = QRegion(bx, by, bw, bh)
+            self.setMask(region)
+        except Exception as e:
+            safe_print(f"[WARN] QRegion rect mask failed: {e}")
+            self._clear_window_region()
 
     def _toggle_standby(self):
         self._standby = not self._standby

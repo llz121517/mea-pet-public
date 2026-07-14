@@ -585,14 +585,3 @@ class ScreenWatcher(QThread):
         if any(w in text for w in ["哼", "……", "懒得"]):
             return "melancholy"
         return "neutral"
-
-
-if __name__ == "__main__":
-    w = ScreenWatcher(idle_minutes=5)
-    w.progress.connect(lambda s: log.info(f"[test] {s}"))
-    w.result_ready.connect(lambda t, m: log.info(f"[test] 梅尔 [{m}]: {t}"))
-    w.silent.connect(lambda: log.info("[test] (不说话)"))
-    w.error.connect(lambda e: log.error(f"[test] ERROR: {e}"))
-    w.search_request.connect(lambda q: log.info(f"[test] 搜索请求: {q}"))
-    w.start()
-    w.wait()
