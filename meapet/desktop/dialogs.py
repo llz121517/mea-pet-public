@@ -266,6 +266,9 @@ class CaptureScopeConsentDialog(QDialog):
         layout = QVBoxLayout(card)
         layout.setContentsMargins(18, 14, 18, 14)
         layout.setSpacing(6)
+        self._outer_layout = outer
+        self._content_card = card
+        self._content_layout = layout
 
         eyebrow = QLabel("隐私保护 · 本次有效 · 默认取消")
         eyebrow.setObjectName("ConsentEyebrow")
@@ -396,11 +399,24 @@ class CaptureScopeConsentDialog(QDialog):
 
     def _resize_to_content(self) -> None:
         """在可选范围字段显隐后收缩窗口，不保留空白占位。"""
-        root_layout = self.layout()
-        if root_layout is not None:
-            root_layout.activate()
-        self.adjustSize()
-        self.resize(self.width(), self.sizeHint().height())
+        # Qt 会分别缓存嵌套布局的 sizeHint；只激活根布局在某些平台或
+        # 测试顺序下仍会拿到显隐前的高度。由内向外主动失效并重算。
+        for frame in (self.region_frame, self.application_frame):
+            frame.updateGeometry()
+            frame_layout = frame.layout()
+            if frame_layout is not None:
+                frame_layout.invalidate()
+                frame_layout.activate()
+        self._content_layout.invalidate()
+        self._content_layout.activate()
+        self._content_card.updateGeometry()
+        self._outer_layout.invalidate()
+        self._outer_layout.activate()
+        self.updateGeometry()
+        target_height = self._outer_layout.totalSizeHint().height()
+        if target_height <= 0:
+            target_height = self.sizeHint().height()
+        self.resize(self.width(), target_height)
 
     def _update_countdown(self) -> None:
         self.countdown_label.setText(

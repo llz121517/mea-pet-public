@@ -76,8 +76,11 @@ DIALOG_STYLE = f"""
         background: {COLOR_BG};
         color: {COLOR_TEXT};
         font-family: {FONT_FAMILY};
+        font-size: 14px;
     }}
-    QFrame#SizeDialogCard {{
+    QFrame#SizeDialogCard,
+    QFrame#TimelineCard,
+    QFrame#TurnCard {{
         background: {COLOR_CARD};
         border: 1px solid {COLOR_BORDER_STRONG};
         border-radius: {RADIUS_MEDIUM}px;
@@ -87,10 +90,74 @@ DIALOG_STYLE = f"""
         background: transparent;
         border: none;
     }}
+    QLabel#PageTitle {{
+        color: {COLOR_TEXT};
+        font-family: {DISPLAY_FONT_FAMILY};
+        font-size: 20px;
+        font-weight: 750;
+    }}
+    QLabel#HelperText {{
+        color: {COLOR_MUTED};
+        font-size: 12px;
+    }}
+    QLabel#FieldLabel {{
+        color: {COLOR_SECONDARY};
+        font-size: 12px;
+        font-weight: 650;
+    }}
+    QLabel#TurnMeta {{
+        color: {COLOR_MUTED};
+        font-size: 12px;
+        font-weight: 600;
+    }}
+    QLabel#TurnPreview {{
+        color: {COLOR_TEXT};
+        font-size: 13px;
+    }}
+    QLabel#TurnUser {{
+        color: {COLOR_SECONDARY};
+        font-size: 12px;
+    }}
     QLabel#ScaleValue {{
         color: {COLOR_ACCENT};
         font-size: 24px;
         font-weight: 750;
+    }}
+    QPlainTextEdit,
+    QTextEdit {{
+        background: {COLOR_INPUT};
+        color: {COLOR_TEXT};
+        border: 1px solid {COLOR_BORDER_STRONG};
+        border-radius: {RADIUS_SMALL}px;
+        padding: 10px 12px;
+        selection-background-color: {rgba(COLOR_ACCENT, 105)};
+        font-size: 13px;
+    }}
+    QPlainTextEdit:focus,
+    QTextEdit:focus {{
+        border: 2px solid {COLOR_FOCUS};
+        padding: 9px 11px;
+    }}
+    QScrollArea {{
+        background: transparent;
+        border: none;
+    }}
+    QScrollArea > QWidget > QWidget {{
+        background: transparent;
+    }}
+    QScrollBar:vertical {{
+        background: transparent;
+        width: 10px;
+        margin: 4px 2px;
+    }}
+    QScrollBar::handle:vertical {{
+        background: {COLOR_BORDER_STRONG};
+        border-radius: 4px;
+        min-height: 28px;
+    }}
+    QScrollBar::add-line:vertical,
+    QScrollBar::sub-line:vertical {{
+        height: 0;
     }}
     QPushButton {{
         min-height: 44px;
@@ -116,6 +183,15 @@ DIALOG_STYLE = f"""
     }}
     QPushButton#PrimaryButton:hover {{
         background: {PALETTE['primary_hover']};
+    }}
+    QPushButton#GhostButton {{
+        background: transparent;
+        border-color: transparent;
+        color: {COLOR_SECONDARY};
+    }}
+    QPushButton#GhostButton:hover {{
+        background: {rgba(COLOR_FOCUS, 22)};
+        color: {COLOR_TEXT};
     }}
     QSlider::groove:horizontal {{
         height: 6px;

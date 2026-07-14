@@ -667,7 +667,7 @@ class TestInstallerReliability(unittest.TestCase):
         )
         platform = {"is_windows": False, "os_label": "Linux", "display": "Linux"}
         with mock.patch(
-            "PyQt5.QtWidgets.QMessageBox.question",
+            "wizard.page_env.styled_message_box",
             return_value=QMessageBox.Yes,
         ), mock.patch("wizard.page_env.PLATFORM", platform):
             EnvCheckPage.install_package(fake_page, "pywin32")

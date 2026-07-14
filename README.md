@@ -203,7 +203,7 @@ http(s)://<listen_host>:<port>/mcp
 | `MEAPET_CONTROL_TOKEN` | Companion MCP Bearer Token |
 | `GSV_PYTHON` | GPT-SoVITS 环境的 `python.exe` |
 | `MEAPET_FORCE_PNG` | 非空真值时强制 PNG |
-| `MEAPET_DEBUG=1` | 允许载荷级调试日志；默认不要开启 |
+| `MEAPET_DEBUG=1` | 额外输出协议级调试诊断；默认不要开启 |
 
 如果真实 Key 曾进入仓库或公开日志，应立即在服务商侧轮换，而不只是删除本地文本。
 
@@ -214,7 +214,7 @@ http(s)://<listen_host>:<port>/mcp
 - 直连模式的 SQLite 记忆与 Agent 自有记忆是两套边界；MeaPet 不复制 Agent 的长期记忆。
 - 新配置应用、会话切换和 Token 轮换都会使旧异步结果失效，迟到的回复、TTS 或截图不会进入新会话。
 - 运行数据位于 `mea_memory.db`、`logs/`、`audio_cache/`、`voice_cache/`；均不应进入发布物。
-- 日志默认只记录长度、状态和脱敏后的错误；完整载荷仅在显式设置 `MEAPET_DEBUG=1` 时输出。
+- 日志默认如实记录用户输入、模型可见回复与 TTS 翻译文本，按日滚动并保留 7 天；API Key、认证头、推理、内部工具参数/结果和截图内容不得写入。`MEAPET_DEBUG=1` 只用于额外协议诊断。
 
 ## 操作
 

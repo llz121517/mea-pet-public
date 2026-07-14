@@ -29,6 +29,7 @@ from PyQt5.QtWidgets import (  # noqa: E402
     QLabel,
     QLineEdit,
     QMenu,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSlider,
@@ -112,6 +113,39 @@ class UiRefactorTests(unittest.TestCase):
             rgba("#FFFFFF", 256)
         with self.assertRaises(ValueError):
             contrast_ratio("invalid", "#000000")
+
+    def test_wizard_message_box_styles_only_the_text_label_and_localizes_buttons(
+        self,
+    ) -> None:
+        from wizard.styles import WIZARD_STYLESHEET, styled_message_box
+
+        captured = {}
+
+        def capture_box(box):
+            captured["box"] = box
+
+        with patch(
+            "wizard.styles.apply_wizard_dialog_style",
+            side_effect=capture_box,
+        ), patch.object(
+            QMessageBox,
+            "exec_",
+            return_value=QMessageBox.Cancel,
+        ):
+            result = styled_message_box(
+                None,
+                title="仍有必要配置未完成",
+                text="仍要保存吗？",
+                icon=QMessageBox.Warning,
+                buttons=QMessageBox.Save | QMessageBox.Cancel,
+                default_button=QMessageBox.Cancel,
+            )
+
+        box = captured["box"]
+        self.assertEqual(result, QMessageBox.Cancel)
+        self.assertEqual(box.button(QMessageBox.Save).text(), "保存")
+        self.assertEqual(box.button(QMessageBox.Cancel).text(), "取消")
+        self.assertIn("QMessageBox QLabel#qt_msgbox_label", WIZARD_STYLESHEET)
 
     def test_bundled_cute_display_font_loads_with_a_safe_body_font(self) -> None:
         from meapet.ui_theme import (
