@@ -1366,6 +1366,51 @@ class UiRefactorTests(unittest.TestCase):
         self.assertEqual(dialog.remaining_seconds, remaining - 1)
         self.assertFalse(dialog.countdown_paused)
 
+    def test_capture_consent_removes_timeout_after_manual_scope_change(self) -> None:
+        from meapet.desktop.dialogs import CaptureScopeConsentDialog
+        from meapet.watcher.capture import CaptureWindow
+
+        dialog = self._track(
+            CaptureScopeConsentDialog(
+                timeout_seconds=5,
+                region_selector=lambda _parent, _initial: None,
+                window_provider=lambda: (
+                    CaptureWindow(101, "项目 - 记事本", "notepad.exe", 20),
+                ),
+            )
+        )
+        dialog.show()
+        QApplication.processEvents()
+        remaining = dialog.remaining_seconds
+
+        index = dialog.scope_combo.findData("application")
+        dialog.scope_combo.setCurrentIndex(index)
+        dialog.scope_combo.activated.emit(index)
+        dialog.scope_combo.popup_closed.emit()
+        dialog._tick()
+
+        self.assertTrue(dialog.countdown_label.isHidden())
+        self.assertFalse(dialog._timer.isActive())
+        self.assertEqual(dialog.remaining_seconds, remaining)
+
+    def test_capture_consent_never_requests_geometry_below_its_minimum(self) -> None:
+        from meapet.desktop.dialogs import CaptureScopeConsentDialog
+
+        dialog = self._track(
+            CaptureScopeConsentDialog(
+                timeout_seconds=5,
+                region_selector=lambda _parent, _initial: None,
+                window_provider=lambda: (),
+            )
+        )
+        dialog.setMinimumHeight(dialog.height() + 19)
+
+        with patch.object(dialog, "resize") as resize:
+            dialog._resize_to_content()
+
+        requested_height = resize.call_args.args[1]
+        self.assertGreaterEqual(requested_height, dialog.minimumHeight())
+
     def test_agent_requested_region_still_requires_a_local_mouse_drag(self) -> None:
         from meapet.desktop.dialogs import CaptureScopeConsentDialog
 

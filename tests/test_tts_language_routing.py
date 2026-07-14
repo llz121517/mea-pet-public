@@ -649,3 +649,18 @@ class TestVoiceTranslationPrompt(unittest.TestCase):
                     "优先模型输出目标语朗读",
                     build_output_instruction(request),
                 )
+
+    def test_base_and_repair_prompts_always_require_voice_language_to_match_text(self):
+        from meapet.agent.prompts import (
+            build_output_instruction,
+            build_repair_instruction,
+        )
+
+        request = self._request(prefer=False, available=False)
+        for instruction in (
+            build_output_instruction(request),
+            build_repair_instruction(request),
+        ):
+            with self.subTest(instruction=instruction[:24]):
+                self.assertIn("voice_text 实际使用的语言", instruction)
+                self.assertIn("voice_text 与 voice_language 必须一致", instruction)
