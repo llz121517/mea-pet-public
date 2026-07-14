@@ -149,7 +149,7 @@ class SpriteRenderer(QObject):
 
     def _get_path(self, code: str) -> str:
         """获取差分文件路径"""
-        filename = f"{self.prefix}_{code}.png"
+        filename = f"{self.prefix}_{code}.webp"
         return os.path.join(self.sprite_dir, filename)
 
     def _get_blink_code(self) -> Optional[str]:
@@ -188,7 +188,7 @@ class SpriteRenderer(QObject):
         path = self._get_path(self._current_expression)
         if os.path.exists(path):
             return path
-        base_path = os.path.join(self.sprite_dir, f"{self.prefix}_base.png")
+        base_path = os.path.join(self.sprite_dir, f"{self.prefix}_base.webp")
         if os.path.exists(base_path):
             return base_path
         raise FileNotFoundError(
