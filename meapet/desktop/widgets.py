@@ -22,6 +22,7 @@ from PyQt5.QtGui import (
 )
 from PyQt5.QtCore import (
     QEasingCurve,
+    QEvent,
     QObject,
     QPoint,
     QPointF,
@@ -340,6 +341,7 @@ class DialogueBox(QWidget):
     """仅承载桌宠回复的自适应语音气泡。"""
 
     dismissed = pyqtSignal()
+    activated = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -397,6 +399,12 @@ class DialogueBox(QWidget):
         self.text_label.setContentsMargins(0, 0, 0, 0)
         self.text_scroll.setWidget(self.text_label)
         container_layout.addWidget(self.text_scroll)
+        for clickable in (
+            self._container,
+            self.text_scroll.viewport(),
+            self.text_label,
+        ):
+            clickable.installEventFilter(self)
 
         self._container.adjustSize()
 
@@ -420,6 +428,19 @@ class DialogueBox(QWidget):
         self._opacity_animation.setEasingCurve(QEasingCurve.OutQuad)
 
         self.hide()
+
+    def eventFilter(self, watched, event):
+        if (
+            event.type() == QEvent.MouseButtonRelease
+            and event.button() == Qt.LeftButton
+        ):
+            self.activated.emit()
+        return super().eventFilter(watched, event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self.activated.emit()
+        super().mouseReleaseEvent(event)
 
     def _get_visual_opacity(self) -> float:
         return self._opacity
@@ -720,6 +741,54 @@ class DialogueBubbleStack(QObject):
         bubble.mark_stack_entry()
         self.changed.emit()
         return bubble
+
+    def begin_message(
+        self,
+        text: str = "",
+        *,
+        mood: str | None = None,
+    ) -> DialogueBox:
+        """创建一个可被后续增量更新的持久气泡。"""
+        return self.show_message(text, duration_ms=0, mood=mood)
+
+    def update_message(
+        self,
+        bubble: DialogueBox,
+        text: str,
+        *,
+        mood: str | None = None,
+    ) -> bool:
+        """原位更新流式气泡，不创建新的栈条目。"""
+        if bubble not in self._bubbles:
+            return False
+        bubble.show_text(
+            text,
+            duration_ms=0,
+            initial_opacity=bubble.visualOpacity,
+            mood=mood,
+        )
+        self.changed.emit()
+        return True
+
+    def finalize_message(
+        self,
+        bubble: DialogueBox,
+        text: str,
+        *,
+        duration_ms: int,
+        mood: str | None = None,
+    ) -> bool:
+        """完成流式气泡并启动最终展示倒计时。"""
+        if bubble not in self._bubbles:
+            return False
+        bubble.show_text(
+            text,
+            duration_ms=max(0, int(duration_ms)),
+            initial_opacity=bubble.visualOpacity,
+            mood=mood,
+        )
+        self.changed.emit()
+        return True
 
     def _discard(self, bubble: DialogueBox) -> None:
         if bubble not in self._bubbles:

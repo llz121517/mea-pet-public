@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import sys
 from collections.abc import Callable
+from pathlib import Path
 
 from PyQt5.QtWidgets import QApplication, QDialog
 from PyQt5.QtCore import QPoint, QRect, QSize, Qt, QTimer
@@ -287,12 +288,15 @@ class PetRenderHostMixin:
         self.renderer = None
         self.sprite_label = None
 
+        from meapet.config.store import resolve_resource_path
+
         l2d_cfg = self.config.get("live2d", {})
-        model_dir = l2d_cfg.get("model_dir", "")
+        model_dir = resolve_resource_path(l2d_cfg.get("model_dir", ""))
         force_png = os.environ.get("MEAPET_FORCE_PNG", "").strip().lower()
         live2d_requested = (
             force_png not in ("1", "true", "yes")
             and l2d_cfg.get("enabled", False)
+            and bool(model_dir)
             and os.path.isdir(model_dir)
         )
 
@@ -306,15 +310,12 @@ class PetRenderHostMixin:
                 return
             except Exception as exc:
                 safe_print(f"[pet] Live2D 初始化失败，使用 PNG: {exc}")
-                import traceback
-
-                safe_print(traceback.format_exc())
                 self._fallback_to_png(str(exc))
                 return
 
         if force_png in ("1", "true", "yes"):
             safe_print("[toggle] MEAPET_FORCE_PNG=1, skip Live2D")
-        elif l2d_cfg.get("enabled", False) and not os.path.isdir(model_dir):
+        elif l2d_cfg.get("enabled", False) and not (model_dir and os.path.isdir(model_dir)):
             safe_print(f"[live2d] 模型目录不存在，使用 PNG: {model_dir}")
 
         self._init_png_renderer()
@@ -465,11 +466,12 @@ class PetRenderHostMixin:
         self._mark_renderer_ready()
 
     def _init_live2d(self):
+        from meapet.config.store import resolve_resource_path
         from meapet.desktop.live2d_widget import Live2DModel
         l2d_cfg = self.config.get("live2d", {})
-        model_dir = l2d_cfg.get("model_dir", "")
+        model_dir = resolve_resource_path(l2d_cfg.get("model_dir", ""))
         safe_print(f"[live2d] 开始初始化，model_dir={model_dir}")
-        if not os.path.isdir(model_dir):
+        if not model_dir or not os.path.isdir(model_dir):
             safe_print("[live2d] 模型目录不存在，回退至 PNG")
             self._use_live2d = False
             return

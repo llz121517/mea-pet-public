@@ -114,6 +114,90 @@ class TestProviderKeyIsolation(unittest.TestCase):
         )
         self.assertEqual(base, "https://api.xiaomimimo.com/v1")
 
+
+class TestRuntimeConfigurationSwitch(unittest.TestCase):
+    def test_saved_configuration_cancels_old_generation_and_rebuilds_one_backend(self):
+        from meapet.desktop.config_bridge import PetConfigBridgeMixin
+
+        class Timer:
+            def __init__(self, name, events):
+                self.name = name
+                self.events = events
+
+            def stop(self):
+                self.events.append(f"stop:{self.name}")
+
+        class Worker:
+            def __init__(self, events):
+                self.events = events
+
+            def terminate(self):
+                self.events.append("terminate:worker")
+
+            @staticmethod
+            def wait(_timeout):
+                return True
+
+            def deleteLater(self):
+                self.events.append("delete:worker")
+
+        class Host(PetConfigBridgeMixin):
+            def __init__(self):
+                self.config = {"llm": {"mode": "direct"}}
+                self.events = []
+                self._chat_worker = Worker(self.events)
+                self._chat_poll = Timer("poll", self.events)
+                self._chat_timeout = Timer("timeout", self.events)
+
+            def _invalidate_active_conversation(self):
+                self.events.append("invalidate")
+
+            def _stop_control(self):
+                self.events.append("stop:control")
+
+            def _disconnect_watcher_signals(self):
+                self.events.append("stop:watcher")
+
+            def _apply_motion_preference(self):
+                self.events.append("motion")
+
+            def _init_tts(self):
+                self.events.append("init:tts")
+
+            def _init_chat(self):
+                self.events.append("init:chat")
+
+            def _init_watcher(self):
+                self.events.append("init:watcher")
+
+            def _init_control(self):
+                self.events.append("init:control")
+
+            def _show_bubble(self, text, duration, mood=None):
+                self.events.append((text, duration, mood))
+
+        host = Host()
+        applied = host._apply_runtime_config(
+            {
+                "llm": {
+                    "mode": "agent",
+                    "agent": {
+                        "kind": "hermes",
+                        "base_url": "http://127.0.0.1:8642",
+                    },
+                }
+            }
+        )
+
+        self.assertTrue(applied)
+        self.assertEqual(host.config["llm"]["mode"], "agent")
+        self.assertLess(host.events.index("invalidate"), host.events.index("init:chat"))
+        self.assertEqual(
+            [event for event in host.events if event in {"init:chat", "init:control"}],
+            ["init:chat", "init:control"],
+        )
+        self.assertIn(("新配置已应用。", 3500, None), host.events)
+
     def test_unsupported_follow_backend_falls_back_to_local_vision(self):
         from meapet.config.store import (
             resolve_vision_backend,
@@ -300,8 +384,135 @@ class TestConfigSafety(unittest.TestCase):
         splash.close.assert_called_once_with()
         app.quit.assert_called_once_with()
 
+    def test_resolve_resource_path_is_independent_of_cwd(self):
+        from meapet.config.store import resolve_resource_path
+
+        with tempfile.TemporaryDirectory() as project, tempfile.TemporaryDirectory() as cwd:
+            project_path = Path(project)
+            model = project_path / "live2d" / "model" / "mea"
+            model.mkdir(parents=True)
+            (model / "mea.model3.json").write_text("{}", encoding="utf-8")
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(cwd)
+                resolved = resolve_resource_path(
+                    "./live2d/model/mea",
+                    root=project_path,
+                )
+                self.assertTrue(os.path.isdir(resolved))
+                self.assertEqual(
+                    Path(resolved).resolve(),
+                    model.resolve(),
+                )
+            finally:
+                os.chdir(old_cwd)
+
+    def test_writable_config_path_maps_example_to_config_json(self):
+        from meapet.config.store import resolve_writable_config_path
+
+        with tempfile.TemporaryDirectory() as project:
+            project_path = Path(project)
+            example = project_path / "config.example.json"
+            self.assertEqual(
+                resolve_writable_config_path(str(example), root=project_path),
+                str(project_path / "config.json"),
+            )
+            self.assertEqual(
+                resolve_writable_config_path(None, root=project_path),
+                str(project_path / "config.json"),
+            )
+
+    def test_save_config_merges_with_existing_disk_fields(self):
+        from meapet.config.store import save_config
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "llm": {
+                            "backend": "ollama",
+                            "api_key": "disk-key",
+                            "model": "keep-me",
+                        },
+                        "custom_top": {"nested": True},
+                        "display": {"size_factor": 2.0},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            save_config(
+                {
+                    "llm": {"backend": "deepseek", "api_key": "new-key"},
+                    "display": {"size_factor": 1.25},
+                },
+                str(path),
+            )
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["llm"]["backend"], "deepseek")
+            self.assertEqual(saved["llm"]["api_key"], "new-key")
+            self.assertEqual(saved["llm"]["model"], "keep-me")
+            self.assertEqual(saved["custom_top"], {"nested": True})
+            self.assertEqual(saved["display"]["size_factor"], 1.25)
+
+    def test_config_bridge_saves_to_remembered_writable_path(self):
+        from meapet.desktop.config_bridge import PetConfigBridgeMixin
+
+        class Host(PetConfigBridgeMixin):
+            pass
+
+        with tempfile.TemporaryDirectory() as td:
+            project = Path(td)
+            example = project / "config.example.json"
+            example.write_text(
+                json.dumps(
+                    {
+                        "llm": {"backend": "ollama", "api_key": "from-example"},
+                        "live2d": {
+                            "enabled": True,
+                            "model_dir": "./live2d/model/mea",
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            host = Host()
+            host.config = host._load_config(str(example))
+            host.config.setdefault("ui", {})["first_run_hint_shown"] = True
+            host._save_config()
+
+            written = project / "config.json"
+            self.assertTrue(written.is_file())
+            saved = json.loads(written.read_text(encoding="utf-8"))
+            self.assertTrue(saved["ui"]["first_run_hint_shown"])
+            self.assertEqual(saved["llm"]["api_key"], "from-example")
+            # example template must not be rewritten
+            example_data = json.loads(example.read_text(encoding="utf-8"))
+            self.assertNotIn("ui", example_data)
+
 
 class TestRepositoryIgnoreRules(unittest.TestCase):
+    def test_example_config_has_unique_keys_and_timeline_default(self):
+        duplicates = []
+
+        def reject_duplicate_keys(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    duplicates.append(key)
+                result[key] = value
+            return result
+
+        example = json.loads(
+            (ROOT / "config.example.json").read_text(encoding="utf-8"),
+            object_pairs_hook=reject_duplicate_keys,
+        )
+
+        self.assertEqual(duplicates, [])
+        self.assertEqual(example["ui"]["timeline_turns"], 5)
+
     def test_sensitive_runtime_artifacts_are_ignored(self):
         patterns = (ROOT / ".gitignore").read_text(encoding="utf-8")
         for expected in (
@@ -316,6 +527,16 @@ class TestRepositoryIgnoreRules(unittest.TestCase):
             "*.log.*",
         ):
             self.assertIn(expected, patterns)
+
+    def test_setuptools_discovers_runtime_subpackages(self):
+        import tomllib
+
+        project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        setuptools = project["tool"]["setuptools"]
+        package_find = setuptools["packages"]["find"]
+
+        self.assertIn("meapet*", package_find["include"])
+        self.assertIn("wizard*", package_find["include"])
 
 
 class TestInstallerReliability(unittest.TestCase):

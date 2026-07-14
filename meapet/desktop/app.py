@@ -55,6 +55,7 @@ from meapet.desktop.widgets import DialogueBubbleStack
 from meapet.desktop.audio import PetAudioMixin
 from meapet.desktop.watch_ctrl import PetWatcherMixin
 from meapet.desktop.chat_flow import PetChatFlowMixin
+from meapet.desktop.control_bridge import PetControlBridgeMixin
 from meapet.desktop.interaction import PetInteractionMixin
 from meapet.desktop.window_chrome import PetWindowChromeMixin
 from meapet.desktop.render_host import PetRenderHostMixin, calculate_drag_position
@@ -95,6 +96,7 @@ class MeaPet(
     PetAudioMixin,
     PetWatcherMixin,
     PetChatFlowMixin,
+    PetControlBridgeMixin,
     PetInteractionMixin,
     PetWindowChromeMixin,
     PetRenderHostMixin,
@@ -157,6 +159,7 @@ class MeaPet(
         _safe("renderer", self._init_renderer)
         _safe("chat", self._init_chat)
         _safe("tts", self._init_tts)
+        _safe("control", self._init_control)
         self._cloud_watch_confirmed = False
         _safe("watcher", self._init_watcher)
         _safe("tray", self._setup_tray)
@@ -166,13 +169,13 @@ class MeaPet(
         try:
             self._place_bottom_right()
         except Exception as e:
-            log.warn(f"[init] 窗口定位失败: {e}")
+            log.warning(f"[init] 窗口定位失败: {e}")
         self.show()
         self.raise_()
         try:
             self._apply_hit_region()
         except Exception as e:
-            log.warn(f"[init] 碰撞区域设置失败: {e}")
+            log.warning(f"[init] 碰撞区域设置失败: {e}")
 
         try:
             cache_dir = str(PROJECT_ROOT / "audio_cache")
@@ -182,7 +185,7 @@ class MeaPet(
                     f"[audio_cache] 缓存清理完成: removed={stats['removed']} kept={stats['kept']}"
                 )
         except Exception as e:
-            log.warn(f"[audio_cache] 缓存清理跳过: {e}")
+            log.warning(f"[audio_cache] 缓存清理跳过: {e}")
 
         if self._config_broken:
             QTimer.singleShot(800, lambda: self._show_bubble("配置文件坏了喵", 5000))
@@ -212,11 +215,107 @@ class MeaPet(
         self.bubble = None
 
     def _init_chat(self):
-        self.memory = MeaMemory()
-        self._schedule_memory_maintenance()
-        self.chat_engine = create_engine_from_config(self.config, self.memory)
-        if self.chat_engine.backend == "ollama" and self.chat_engine.available:
-            QTimer.singleShot(2000, self._show_warmup_status)
+        if getattr(self, "memory", None) is None:
+            self.memory = MeaMemory()
+            self._schedule_memory_maintenance()
+        from meapet.conversation.timeline import ConversationTimeline
+
+        llm_config = self.config.get("llm") or {}
+        mode = str(llm_config.get("mode") or "direct").strip().lower()
+        ui_config = self.config.get("ui") or {}
+        try:
+            timeline_turns = int(ui_config.get("timeline_turns", 5))
+        except (TypeError, ValueError):
+            timeline_turns = 5
+        timeline_turns = max(0, min(timeline_turns, 100))
+
+        def persist_turn(turn):
+            try:
+                self.memory.save_conversation_turn(
+                    turn,
+                    max_turns=timeline_turns,
+                )
+            except Exception as exc:
+                log.warning(
+                    f"[timeline] 保存最近对话失败: {type(exc).__name__}"
+                )
+
+        if not hasattr(self, "_conversation_timeline"):
+            self._conversation_timeline = ConversationTimeline(
+                timeline_turns,
+                terminal_callback=persist_turn,
+            )
+        else:
+            self._conversation_timeline.set_max_turns(timeline_turns)
+            self._conversation_timeline.set_terminal_callback(persist_turn)
+        if not getattr(self, "_conversation_timeline_loaded", False):
+            try:
+                for turn in self.memory.load_conversation_turns():
+                    self._conversation_timeline.restore(turn)
+                self._conversation_timeline_loaded = True
+            except Exception as exc:
+                log.warning(
+                    f"[timeline] 恢复最近对话失败: {type(exc).__name__}"
+                )
+        self._agent_history = []
+        self._agent_tts_workers = {}
+        self._agent_bubbles = {}
+        self._active_agent_turn_id = ""
+
+        if mode == "agent":
+            from meapet.agent.factory import create_agent_adapter_from_config
+
+            agent_config = llm_config.get("agent") or {}
+            previous_scope = (
+                str(agent_config.get("session_id") or ""),
+                str(agent_config.get("session_key") or ""),
+            )
+            self.chat_engine = None
+            self.agent_adapter = create_agent_adapter_from_config(self.config)
+            current_agent_config = (self.config.get("llm") or {}).get("agent") or {}
+            current_scope = (
+                str(current_agent_config.get("session_id") or ""),
+                str(current_agent_config.get("session_key") or ""),
+            )
+            if current_scope != previous_scope:
+                self._save_config()
+        else:
+            self.agent_adapter = None
+            self.chat_engine = create_engine_from_config(self.config, self.memory)
+            if self.chat_engine.backend == "ollama" and self.chat_engine.available:
+                QTimer.singleShot(2000, self._show_warmup_status)
+        conversation_key = self._refresh_conversation_key()
+        if mode == "agent":
+            agent_config = llm_config.get("agent") or {}
+            try:
+                history_turns = max(
+                    0,
+                    min(int(agent_config.get("history_turns", 5)), 50),
+                )
+            except (TypeError, ValueError):
+                history_turns = 5
+            self._agent_history = list(
+                self._conversation_timeline.history(
+                    conversation_key,
+                    max_turns=history_turns,
+                )
+            )
+        else:
+            restored_history = list(
+                self._conversation_timeline.history(
+                    conversation_key,
+                    max_turns=7,
+                )
+            )
+            if restored_history and self.chat_engine is not None:
+                lock = getattr(self.chat_engine, "_history_lock", None)
+                if lock is None:
+                    system = self.chat_engine.history[0]
+                    self.chat_engine.history = [system] + restored_history
+                else:
+                    with lock:
+                        system = self.chat_engine.history[0]
+                        self.chat_engine.history = [system] + restored_history
         QTimer.singleShot(1200, self._maybe_show_first_run_hint)
 
     def _apply_motion_preference(self) -> None:
@@ -268,6 +367,9 @@ class MeaPet(
     def _init_watcher(self):
         llm_cfg = self.config.get("llm", {}) or {}
         vision_cfg = self.config.get("vision", {}) or {}
+        watcher_cfg = self.config.get("watcher", {}) or {}
+        capture_cfg = watcher_cfg.get("capture") or {}
+        vision_mode = str(vision_cfg.get("mode") or "disabled").strip().lower()
 
         backend = resolve_vision_backend(vision_cfg, llm_cfg)
         vision_model = vision_cfg.get("model") or (
@@ -297,7 +399,7 @@ class MeaPet(
         ollama_host = resolve_vision_host(vision_cfg, llm_cfg)
 
         log.info(
-            f"[watcher] 视觉后端配置: backend={backend} "
+            f"[watcher] 视觉路由: mode={vision_mode} backend={backend} "
             f"model={vision_model if backend != 'mimo' else mimo_model} "
             f"allow_cloud={self.config.get('watcher', {}).get('allow_cloud', False)}"
         )
@@ -309,6 +411,10 @@ class MeaPet(
             api_base=api_base,
             api_key=api_key,
             mimo_model=mimo_model,
+            mode=vision_mode,
+            capture_scope=capture_cfg.get("scope", "full_screen"),
+            capture_region=capture_cfg.get("region"),
+            capture_application=capture_cfg.get("application", ""),
         )
         self._watcher.result_ready.connect(self._on_watch_result)
         self._watcher.error.connect(self._on_watch_error)
@@ -484,7 +590,7 @@ def main():
         splash.show()
         app.processEvents()
     except Exception as e:
-        log.warn(f"[boot] 启动页跳过: {e}")
+        log.warning(f"[boot] 启动页跳过: {e}")
         splash = None
 
     pet = None
@@ -533,7 +639,7 @@ def main():
                 f"@({pet2.x()},{pet2.y()}) vis={pet2.isVisible()}"
             )
         except Exception as e:
-            log.warn(f"[boot] 确保窗口可见失败: {e}")
+            log.warning(f"[boot] 确保窗口可见失败: {e}")
 
     def _greet():
         try:
@@ -541,7 +647,7 @@ def main():
             if pet2 is not None and hasattr(pet2, "show_reply"):
                 pet2.show_reply("......", "neutral")
         except Exception as e:
-            log.warn(f"[boot] 问候消息跳过: {e}")
+            log.warning(f"[boot] 问候消息跳过: {e}")
 
     startup_finished = {"done": False}
 

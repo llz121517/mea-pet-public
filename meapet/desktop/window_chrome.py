@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import sys
+import uuid
 
 from PyQt5.QtWidgets import (
     QAction,
@@ -105,6 +106,12 @@ class PetWindowChromeMixin:
 
     def _quit(self):
         safe_print("[pet] quitting by user/menu…")
+        stop_control = getattr(self, "_stop_control", None)
+        if callable(stop_control):
+            try:
+                stop_control()
+            except Exception:
+                pass
         try:
             if not self._use_live2d and self.renderer:
                 self.renderer.stop_blink_animation()
@@ -403,8 +410,30 @@ class PetWindowChromeMixin:
         reconf_action = QAction("打开配置页…", self)
         reconf_action.triggered.connect(self._reopen_setup_wizard)
         settings_menu.addAction(reconf_action)
+        timeline_action = QAction("对话时间线…", self)
+        timeline_action.triggered.connect(self._show_timeline)
+        settings_menu.addAction(timeline_action)
+        llm_mode = str(
+            ((self.config.get("llm") or {}).get("mode") or "direct")
+        ).strip().lower()
+        control_enabled = bool(
+            (self.config.get("agent_control") or {}).get("enabled", False)
+        )
+        if llm_mode == "agent" and control_enabled:
+            copy_token_action = QAction("复制 Agent 控制令牌", self)
+            copy_token_action.triggered.connect(self._copy_agent_control_token)
+            settings_menu.addAction(copy_token_action)
+            rotate_token_action = QAction("重新生成 Agent 控制令牌…", self)
+            rotate_token_action.triggered.connect(self._regenerate_agent_control_token)
+            settings_menu.addAction(rotate_token_action)
         settings_menu.addSeparator()
-        reset_action = QAction("重置所有记忆…", self)
+        reset_label = (
+            "新建 Agent 会话…"
+            if str(((self.config.get("llm") or {}).get("mode") or "direct")).lower()
+            == "agent"
+            else "重置所有记忆…"
+        )
+        reset_action = QAction(reset_label, self)
         reset_action.setObjectName("DangerAction")
         reset_action.setIcon(standard_icon("reset"))
         reset_action.triggered.connect(self._reset_memory)
@@ -430,7 +459,40 @@ class PetWindowChromeMixin:
         self._status_panel.show()
         self._status_panel.refresh()
 
+    def _show_timeline(self) -> None:
+        timeline = getattr(self, "_conversation_timeline", None)
+        if timeline is None:
+            self._show_bubble("还没有可查看的对话。", 3000, mood=None)
+            return
+        from meapet.desktop.timeline_viewer import TimelineDialog
+
+        dialog = getattr(self, "_timeline_dialog", None)
+        if dialog is None:
+            dialog = TimelineDialog(timeline, self)
+            self._timeline_dialog = dialog
+        dialog.refresh()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _show_timeline_turn(self, turn_id: str) -> None:
+        timeline = getattr(self, "_conversation_timeline", None)
+        turn = timeline.find(turn_id) if timeline is not None else None
+        if turn is None:
+            self._show_bubble("这轮完整回复已不在最近缓存中。", 3500, mood=None)
+            return
+        from meapet.desktop.timeline_viewer import TurnDetailDialog
+
+        dialog = TurnDetailDialog(turn, self)
+        self._timeline_turn_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+
     def _reset_memory(self):
+        llm = (getattr(self, "config", {}) or {}).get("llm") or {}
+        if str(llm.get("mode") or "direct").strip().lower() == "agent":
+            self._start_new_agent_session()
+            return
         import random
         reply = QMessageBox.question(
             self,
@@ -441,15 +503,115 @@ class PetWindowChromeMixin:
         )
         if reply == QMessageBox.Yes:
             self.memory.reset_all()
+            timeline = getattr(self, "_conversation_timeline", None)
+            if timeline is not None:
+                timeline.clear()
+            engine = getattr(self, "chat_engine", None)
+            clear_history = getattr(engine, "clear_history", None)
+            if callable(clear_history):
+                clear_history()
             self._show_bubble(
                 "-什么都没发生喵。" if random.random() < 0.1 else "……你是谁喵？",
                 3000,
             )
 
+    def _start_new_agent_session(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "新建 Agent 会话",
+            "确定要开始一个新的 Agent 会话吗？\n\n"
+            "当前会话将结束，MeaPet 中的旧时间线仍可只读查看。"
+            "此操作不会删除 Agent 服务端的数据或长期记忆，也暂不支持切回旧会话。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        worker = getattr(self, "_chat_worker", None)
+        if worker is not None and callable(getattr(worker, "terminate", None)):
+            try:
+                worker.terminate()
+                worker.wait(1000)
+            except Exception:
+                pass
+
+        invalidate = getattr(self, "_invalidate_active_conversation", None)
+        if callable(invalidate):
+            invalidate()
+
+        llm = self.config.setdefault("llm", {})
+        agent = llm.setdefault("agent", {})
+        agent["session_id"] = f"meapet-{uuid.uuid4().hex}"
+        self._agent_history = []
+        self._active_agent_turn_id = ""
+        self._agent_tts_workers = {}
+        self._agent_bubbles = {}
+
+        try:
+            old_adapter = getattr(self, "agent_adapter", None)
+            close = getattr(old_adapter, "close", None)
+            if callable(close):
+                from meapet.async_runtime import submit
+
+                submit(close())
+        except Exception:
+            pass
+
+        from meapet.agent.factory import create_agent_adapter_from_config
+
+        try:
+            self.agent_adapter = create_agent_adapter_from_config(self.config)
+            self._save_config()
+            refresh_key = getattr(self, "_refresh_conversation_key", None)
+            if callable(refresh_key):
+                refresh_key()
+            self._show_bubble(
+                "已开始新的 Agent 会话。旧时间线仍可查看。",
+                4500,
+                mood=None,
+            )
+        except Exception as exc:
+            safe_print(f"[agent] 新建会话失败: {type(exc).__name__}: {exc}")
+            self._show_bubble("新建 Agent 会话失败，请检查配置。", 8000, mood=None)
+
+    def _copy_agent_control_token(self) -> None:
+        from meapet.config.store import resolve_secret
+
+        raw = str(
+            (self.config.get("agent_control") or {}).get("auth_token") or ""
+        ).strip()
+        token = resolve_secret(raw, ("MEAPET_CONTROL_TOKEN",))
+        if not token:
+            self._show_bubble("当前没有可复制的 Agent 控制令牌。", 3500, mood=None)
+            return
+        QApplication.clipboard().setText(token)
+        self._show_bubble("Agent 控制令牌已复制。", 3000, mood=None)
+
+    def _regenerate_agent_control_token(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "重新生成 Agent 控制令牌",
+            "重新生成后，旧令牌会立即失效，当前 Agent 需要改用新令牌。继续吗？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        rotate = getattr(self, "_rotate_control_token", None)
+        if not callable(rotate):
+            self._show_bubble("令牌重新生成失败。", 5000, mood=None)
+            return
+        rotate()
+        self._show_bubble("已重新生成 Agent 控制令牌，旧令牌已失效。", 4500, mood=None)
+
     def _reopen_setup_wizard(self):
         try:
             from wizard.app import SetupWizard
             self._setup_wizard = SetupWizard()
+            apply_config = getattr(self, "_apply_runtime_config", None)
+            if callable(apply_config):
+                self._setup_wizard.config_saved.connect(apply_config)
             self._setup_wizard.show()
         except Exception as e:
             safe_print(f"[pet] 打开配置页失败: {e}")
