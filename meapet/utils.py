@@ -189,12 +189,12 @@ def cloud_vision_allowed(settings: dict, is_cloud_backend: bool) -> bool:
 
 
 def is_loopback_url(url: str) -> bool:
-    """纯本地判断 HTTP(S) URL 是否明确指向回环地址，不执行 DNS 查询。"""
+    """纯本地判断 HTTP/WS URL 是否明确指向回环地址，不执行 DNS。"""
     if not isinstance(url, str) or not url.strip():
         return False
     try:
         parsed = urllib.parse.urlparse(url.strip())
-        if parsed.scheme.lower() not in {"http", "https"}:
+        if parsed.scheme.lower() not in {"http", "https", "ws", "wss"}:
             return False
         host = parsed.hostname
         if not host:

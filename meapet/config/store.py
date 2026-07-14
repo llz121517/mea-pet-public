@@ -20,9 +20,13 @@ import tempfile
 from pathlib import Path
 from typing import Dict, Optional, Tuple, Union
 
-from meapet.config.normalizers import normalize_gsv_ref_language
+from meapet.config.normalizers import (
+    canonical_tts_language,
+    normalize_gsv_ref_language,
+)
 from meapet.ui_theme import normalize_ui_font_scale
 from meapet.utils import mask_secret, normalize_watcher
+from meapet.vision.policy import normalize_vision_mode
 
 
 # backend / 字段 → 候选环境变量（按顺序）
@@ -53,6 +57,18 @@ DEFAULT_BUBBLE = {
 
 DEFAULT_WATCHER_INTERVAL = {"min_ms": 180000, "max_ms": 360000}
 
+DEFAULT_AGENT_CONTROL = {
+    "enabled": False,
+    "listen_host": "127.0.0.1",
+    "port": 8765,
+    "allowed_agent_ip": "127.0.0.1",
+    "auth_token": "",
+    "allow_insecure_http": False,
+    "cert_file": "",
+    "key_file": "",
+    "ca_file": "",
+}
+
 
 def project_root() -> str:
     from meapet.paths import project_root as _pr
@@ -73,6 +89,41 @@ def resolve_startup_config_path(
         return str(primary)
     return str(base / "config.example.json")
 
+
+def resolve_writable_config_path(
+    path: Optional[Union[str, os.PathLike[str]]] = None,
+    root: Optional[Union[str, os.PathLike[str]]] = None,
+) -> str:
+    """把启动/读取路径映射为可写的 config.json。
+
+    从 config.example.json 启动时，首次保存必须落到同目录 config.json，
+    避免改写仓库模板。
+    """
+    base = Path(root) if root is not None else Path(project_root())
+    if path is None or str(path).strip() == "":
+        return str(base / "config.json")
+    candidate = Path(path)
+    if candidate.name == "config.example.json":
+        return str(candidate.with_name("config.json"))
+    return str(candidate)
+
+
+def resolve_resource_path(
+    path: Union[str, os.PathLike[str]] = "",
+    root: Optional[Union[str, os.PathLike[str]]] = None,
+) -> str:
+    """把相对资源路径锚定到项目根，避免依赖进程 cwd。
+
+    绝对路径原样规范化；空字符串返回空字符串。
+    """
+    raw = str(path or "").strip()
+    if not raw:
+        return ""
+    p = Path(raw)
+    if p.is_absolute():
+        return str(p)
+    base = Path(root) if root is not None else Path(project_root())
+    return str((base / p).resolve())
 
 
 def _first_env(names: Tuple[str, ...]) -> str:
@@ -136,6 +187,11 @@ def resolve_secret(file_value: str = "", env_names: Tuple[str, ...] = ()) -> str
 
 
 def save_config(config: dict, path: Optional[str] = None) -> None:
+    """PATCH 式写入：与磁盘已有字段 deep-merge 后再 normalize。
+
+    调用方应传入完整运行时 config；磁盘上仅存在于文件、未加载进内存的字段
+    也会被保留（避免向导/局部更新冲掉其它键）。
+    """
     cpath = path or config_path()
     existing = load_json(cpath, {})
     merged = _deep_merge(existing, config)
@@ -147,6 +203,15 @@ def resolve_llm_api_key(llm_cfg: dict) -> str:
     backend = (llm_cfg.get("backend") or "ollama").lower()
     names = ENV_LLM_KEY.get(backend, ("MEAPET_API_KEY",))
     return resolve_secret(llm_cfg.get("api_key", ""), names)
+
+
+def resolve_direct_api_key(llm_cfg: dict) -> str:
+    """解析显式 direct profile；环境变量仍优先于文件值。"""
+    direct = llm_cfg.get("direct") if isinstance(llm_cfg.get("direct"), dict) else {}
+    provider = str(direct.get("provider") or llm_cfg.get("backend") or "custom").lower()
+    names = ENV_LLM_KEY.get(provider, ("MEAPET_API_KEY",))
+    value = resolve_secret(str(direct.get("api_key") or ""), names)
+    return value or resolve_llm_api_key(llm_cfg)
 
 
 def resolve_tts_api_key(tts_cfg: dict, llm_cfg: Optional[dict] = None) -> str:
@@ -293,17 +358,116 @@ def _deep_merge(base: dict, overlay: dict) -> dict:
     return out
 
 
+def _normalize_llm_contract(value: object) -> dict:
+    """补齐 direct/agent 显式结构，同时保留当前运行路径使用的旧字段。"""
+    llm = copy.deepcopy(value) if isinstance(value, dict) else {}
+    backend = str(llm.get("backend") or "ollama").strip().lower() or "ollama"
+    requested_mode = str(llm.get("mode") or "").strip().lower()
+    if requested_mode not in {"direct", "agent"}:
+        requested_mode = "agent" if backend in {"hermes", "openclaw"} else "direct"
+
+    direct = copy.deepcopy(llm.get("direct")) if isinstance(llm.get("direct"), dict) else {}
+    provider = backend if backend not in {"hermes", "openclaw"} else "ollama"
+    direct.setdefault("provider", provider)
+    direct.setdefault("protocol", "ollama_chat" if provider == "ollama" else "openai_chat")
+    direct.setdefault("api_base", str(llm.get("api_base") or "").strip())
+    direct.setdefault("host", str(llm.get("host") or "").strip())
+    direct.setdefault("model", str(llm.get("model") or "").strip())
+    direct.setdefault("api_key", str(llm.get("api_key") or "").strip())
+    direct.setdefault("temperature", llm.get("temperature", 0.7))
+    direct.setdefault("max_tokens", llm.get("max_tokens", 512))
+
+    agent = copy.deepcopy(llm.get("agent")) if isinstance(llm.get("agent"), dict) else {}
+    kind = str(agent.get("kind") or "").strip().lower()
+    if kind not in {"hermes", "openclaw"}:
+        kind = backend if backend in {"hermes", "openclaw"} else "hermes"
+    default_url = (
+        "ws://127.0.0.1:18789"
+        if kind == "openclaw"
+        else "http://127.0.0.1:8642"
+    )
+    agent["kind"] = kind
+    agent.setdefault(
+        "base_url",
+        str(llm.get("bridge_url") or default_url).strip() or default_url,
+    )
+    agent.setdefault("auth_token", "")
+    agent.setdefault("session_id", "")
+    agent.setdefault("session_key", "")
+    agent.setdefault("history_turns", 5)
+    agent.setdefault("allow_insecure_ws", False)
+    agent.setdefault("identity_path", "")
+    tls = copy.deepcopy(agent.get("tls")) if isinstance(agent.get("tls"), dict) else {}
+    tls.setdefault("verify", True)
+    tls.setdefault("ca_file", "")
+    agent["tls"] = tls
+
+    llm["mode"] = requested_mode
+    llm["direct"] = direct
+    llm["agent"] = agent
+    return llm
+
+
+def _normalize_agent_control(value: object) -> dict:
+    control = copy.deepcopy(value) if isinstance(value, dict) else {}
+    for key, default in DEFAULT_AGENT_CONTROL.items():
+        control.setdefault(key, default)
+    control["enabled"] = bool(control.get("enabled", False))
+    control["allow_insecure_http"] = bool(
+        control.get("allow_insecure_http", False)
+    )
+    control["listen_host"] = (
+        str(control.get("listen_host") or "127.0.0.1").strip() or "127.0.0.1"
+    )
+    control["allowed_agent_ip"] = (
+        str(control.get("allowed_agent_ip") or "127.0.0.1").strip()
+        or "127.0.0.1"
+    )
+    try:
+        port = int(control.get("port", 8765))
+    except (TypeError, ValueError):
+        port = 8765
+    control["port"] = port if 1 <= port <= 65535 else 8765
+    for key in ("auth_token", "cert_file", "key_file", "ca_file"):
+        control[key] = str(control.get(key) or "").strip()
+    return control
+
+
+def _normalize_reference_audios(tts: dict) -> dict:
+    """规范化每语言固定参考音频，并只读迁移旧单条 GSV 配置。"""
+    raw_mapping = tts.get("reference_audios")
+    mapping = {}
+    if isinstance(raw_mapping, dict):
+        for raw_language, raw_entry in raw_mapping.items():
+            language = normalize_gsv_ref_language(raw_language)
+            if isinstance(raw_entry, dict):
+                path = str(raw_entry.get("path") or "").strip()
+                text = str(raw_entry.get("text") or "").strip()
+            else:
+                path = str(raw_entry or "").strip()
+                text = ""
+            if path or text:
+                mapping[language] = {"path": path, "text": text}
+
+    legacy_path = str(tts.get("gsv_ref_wav") or "").strip()
+    legacy_language = normalize_gsv_ref_language(tts.get("gsv_ref_lang"))
+    if legacy_path and legacy_language not in mapping:
+        mapping[legacy_language] = {"path": legacy_path, "text": ""}
+    return mapping
+
+
 
 def normalize_config(config: dict) -> dict:
     """补全默认字段、规范化 watcher / bubble / display / tts.sync"""
     cfg = copy.deepcopy(config or {})
 
-    cfg.setdefault("llm", {})
+    cfg["llm"] = _normalize_llm_contract(cfg.get("llm"))
     cfg.setdefault("vision", {})
     cfg.setdefault("tts", {})
     cfg.setdefault("display", {})
     cfg.setdefault("character", {})
     cfg.setdefault("live2d", {})
+    cfg["agent_control"] = _normalize_agent_control(cfg.get("agent_control"))
 
     # bubble
     bub = cfg.get("bubble_duration_ms") if isinstance(cfg.get("bubble_duration_ms"), dict) else {}
@@ -325,6 +489,11 @@ def normalize_config(config: dict) -> dict:
     # UI 一次性引导等非敏感本地状态
     ui = cfg.get("ui") if isinstance(cfg.get("ui"), dict) else {}
     ui["first_run_hint_shown"] = bool(ui.get("first_run_hint_shown", False))
+    try:
+        timeline_turns = int(ui.get("timeline_turns", 5))
+    except (TypeError, ValueError):
+        timeline_turns = 5
+    ui["timeline_turns"] = max(0, min(timeline_turns, 100))
     cfg["ui"] = ui
 
     # TTS：音频同步 + 可选固定 GPT-SoVITS 参考音频
@@ -337,6 +506,23 @@ def normalize_config(config: dict) -> dict:
     tts["gsv_ref_lang"] = normalize_gsv_ref_language(
         tts.get("gsv_ref_lang")
     )
+    tts["reference_audios"] = _normalize_reference_audios(tts)
+    tts["translate_to_jp"] = bool(tts.get("translate_to_jp", False))
+    tts["translate_target_language"] = canonical_tts_language(
+        tts.get("translate_target_language")
+        or tts.get("voice_lang")
+        or "jp"
+    )
+    raw_supported = tts.get("supported_languages")
+    if isinstance(raw_supported, (list, tuple)):
+        supported = []
+        for value in raw_supported:
+            language = canonical_tts_language(value)
+            if language and language not in supported:
+                supported.append(language)
+        tts["supported_languages"] = supported
+    else:
+        tts.pop("supported_languages", None)
     cfg["tts"] = tts
 
     # watcher 统一结构（interval 内嵌，不再用顶层 watcher_interval）
@@ -368,6 +554,58 @@ def normalize_config(config: dict) -> dict:
         "confirm_once_session": False,
         "interval": interval_out,
     })
+    raw_capture = (
+        watcher_out.get("capture")
+        if isinstance(watcher_out.get("capture"), dict)
+        else {}
+    )
+    scope = str(raw_capture.get("scope") or "full_screen").strip().lower()
+    if scope not in {"full_screen", "region", "application"}:
+        scope = "full_screen"
+    region = raw_capture.get("region")
+    normalized_region = None
+    if isinstance(region, dict):
+        try:
+            candidate = {
+                key: int(region[key])
+                for key in ("x", "y", "width", "height")
+            }
+            if candidate["width"] > 0 and candidate["height"] > 0:
+                normalized_region = candidate
+        except (KeyError, TypeError, ValueError):
+            normalized_region = None
+    if scope == "region" and normalized_region is None:
+        scope = "full_screen"
+    application = str(raw_capture.get("application") or "").strip()[:256]
+    if scope == "application" and not application:
+        scope = "full_screen"
+    watcher_out["capture"] = {
+        "scope": scope,
+        "region": normalized_region if scope == "region" else None,
+        "application": application if scope == "application" else "",
+    }
+
+    vision = (
+        copy.deepcopy(cfg.get("vision"))
+        if isinstance(cfg.get("vision"), dict)
+        else {}
+    )
+    if "mode" in vision:
+        vision_mode = normalize_vision_mode(vision.get("mode"))
+    else:
+        # 旧 watcher 会独立调用视觉模型，因此只能忠实迁移为 relay。
+        legacy_enabled = bool(
+            vision.get("enabled", watcher_out.get("enabled", False))
+        )
+        vision_mode = "relay" if legacy_enabled else "disabled"
+    vision["mode"] = vision_mode
+    vision["enabled"] = vision_mode != "disabled"
+    vision["main_model_supports_images"] = bool(
+        vision.get("main_model_supports_images", False)
+    )
+    if vision_mode == "disabled":
+        watcher_out["enabled"] = False
+    cfg["vision"] = vision
     cfg["watcher"] = watcher_out
     # 保留旧 watcher_interval 和未知字段，避免规范化时删除用户配置。
     return cfg
@@ -385,11 +623,19 @@ def scrub_secrets(config: dict) -> dict:
     out = copy.deepcopy(config or {})
     if "llm" in out and isinstance(out["llm"], dict):
         out["llm"]["api_key"] = ""
+        direct = out["llm"].get("direct")
+        if isinstance(direct, dict):
+            direct["api_key"] = ""
+        agent = out["llm"].get("agent")
+        if isinstance(agent, dict):
+            agent["auth_token"] = ""
     if "tts" in out and isinstance(out["tts"], dict):
         out["tts"]["api_key"] = ""
         out["tts"]["translate_api_key"] = ""
     if "vision" in out and isinstance(out["vision"], dict):
         out["vision"]["api_key"] = ""
+    if "agent_control" in out and isinstance(out["agent_control"], dict):
+        out["agent_control"]["auth_token"] = ""
     return out
 
 

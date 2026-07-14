@@ -10,11 +10,11 @@
 """
 import io
 import traceback
-from PIL import ImageGrab
 from PyQt5.QtCore import QThread, pyqtSignal
 
 from meapet.utils import debug_enabled, redact_text
 from meapet.log import get_color_logger
+from meapet.watcher.capture import capture_screen_image
 
 log = get_color_logger("watcher")
 
@@ -200,6 +200,12 @@ UNIFIED_WATCH_PROMPT = """你是梅尔，《霞流宝石心》的毒舌猫娘（
 
 直接按格式输出："""
 
+RELAY_OBSERVATION_PROMPT = """你是视觉观察器，不是角色聊天模型。
+只描述截图中可见的事实，不评价、不向用户说话、不猜测不可见内容。
+严格返回一个 JSON 对象，禁止 Markdown，字段为：
+{"summary":"不超过800字的画面摘要","application":"主要应用或空字符串","activity":"coding/reading/chatting/gaming/video/idle/unknown","notable_text":["最多10条必要的短文本"],"sensitive":false}
+如可见密码、密钥、私聊、邮件或身份信息，sensitive 设为 true，且 notable_text 不要转录具体秘密。"""
+
 
 class ScreenWatcher(QThread):
     """一次多模态偷看：冷落感知 + 中日双语对白"""
@@ -218,7 +224,11 @@ class ScreenWatcher(QThread):
                  backend: str = "ollama",
                  api_base: str = "",
                  api_key: str = "",
-                 mimo_model: str = "mimo-v2.5"):
+                 mimo_model: str = "mimo-v2.5",
+                 mode: str = "relay",
+                 capture_scope: str = "full_screen",
+                 capture_region: dict | None = None,
+                 capture_application: str = ""):
         super().__init__()
         self.host = ollama_host
         self.vision_model = vision_model
@@ -228,8 +238,31 @@ class ScreenWatcher(QThread):
         self.api_base = api_base.rstrip('/')
         self.api_key = api_key
         self.mimo_model = mimo_model
+        self.mode = str(mode or "disabled").strip().lower()
+        self.capture_scope = str(capture_scope or "full_screen").strip().lower()
+        self.capture_region = (
+            dict(capture_region) if isinstance(capture_region, dict) else None
+        )
+        self.capture_application = str(capture_application or "").strip()
         self._stop = False
         self.last_voice_text = ""
+        self.last_voice_language = ""
+        self.last_tts_style = ""
+        self._reply_adapter = None
+        self._frontend_context = {}
+        self._tts_enabled = False
+
+    def configure_reply(
+        self,
+        adapter,
+        *,
+        frontend_context: dict | None = None,
+        tts_enabled: bool = False,
+    ) -> None:
+        """在主线程为本轮截图写入回复后端与只读上下文快照。"""
+        self._reply_adapter = adapter
+        self._frontend_context = dict(frontend_context or {})
+        self._tts_enabled = bool(tts_enabled)
 
     def set_idle_minutes(self, minutes: float):
         """外部更新冷落时长"""
@@ -248,6 +281,14 @@ class ScreenWatcher(QThread):
             return False
         self._stop = False
         return True
+
+    def _capture_image(self):
+        """与手动/MCP 路径复用同一个范围截图后端。"""
+        return capture_screen_image(
+            scope=self.capture_scope,
+            region=self.capture_region,
+            application=self.capture_application,
+        ).image
 
 
 
@@ -286,33 +327,135 @@ class ScreenWatcher(QThread):
             timeout=float(timeout) + 30,
         )
 
+    def _request_visual_observation(self, image_base64: str) -> str:
+        """仅 relay 模式调用：独立视觉模型只产生观察 JSON。"""
+        if self.backend == "mimo":
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
+            if self.api_key:
+                headers["api-key"] = self.api_key
+            response = self._http_post(
+                f"{self.api_base}/chat/completions",
+                headers=headers,
+                json={
+                    "model": self.mimo_model,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": "只输出用户要求的视觉观察 JSON。",
+                        },
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": RELAY_OBSERVATION_PROMPT},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": (
+                                            "data:image/jpeg;base64,"
+                                            f"{image_base64}"
+                                        )
+                                    },
+                                },
+                            ],
+                        },
+                    ],
+                    "max_tokens": 1200,
+                    "max_completion_tokens": 1200,
+                    "temperature": 0.1,
+                    "stream": False,
+                },
+                timeout=600,
+            )
+            if response.status_code != 200:
+                raise RuntimeError(f"vision relay HTTP {response.status_code}")
+            message = (
+                (response.json().get("choices") or [{}])[0].get("message")
+                or {}
+            )
+            return self._mimo_extract_text(message)
+
+        response = self._http_post(
+            f"{self.host}/api/generate",
+            json={
+                "model": self.vision_model,
+                "prompt": RELAY_OBSERVATION_PROMPT,
+                "images": [image_base64],
+                "stream": False,
+                "options": {"num_predict": 600, "temperature": 0.1},
+            },
+            timeout=600,
+        )
+        if response.status_code != 200:
+            raise RuntimeError(f"vision relay HTTP {response.status_code}")
+        return str(response.json().get("response") or "").strip()
+
+    def _emit_vision_reply(self, reply) -> None:
+        if reply.silent:
+            self.progress.emit(STAGE_SILENT)
+            self.silent.emit()
+            return
+        segments = tuple(reply.segments)
+        if not segments:
+            raise RuntimeError("vision reply has no segments")
+        display = "\n".join(
+            segment.display_text for segment in segments if segment.display_text
+        ).strip()
+        languages = {
+            segment.voice_language
+            for segment in segments
+            if segment.voice_language
+        }
+        if len(languages) == 1:
+            self.last_voice_language = next(iter(languages))
+            self.last_voice_text = " ".join(
+                segment.voice_text
+                for segment in segments
+                if segment.voice_text
+            ).strip()
+        else:
+            # 旧 watcher 呈现一次只播放一条音频；多语段不强行错配。
+            self.last_voice_language = ""
+            self.last_voice_text = ""
+            log.warning("[watcher] 多语段回复跳过合并语音")
+        self.last_tts_style = " ".join(
+            segment.tts_style
+            for segment in segments
+            if segment.tts_style
+        ).strip()[:400]
+        mood = segments[0].mood or "neutral"
+        self.progress.emit(STAGE_ROAST)
+        self.result_ready.emit(display, mood)
+
     def run(self):
-        """截屏后一次模型调用：说/不说 + 中日双语对白。"""
+        """截图后按 inherit/relay 路由，最终统一交给主回复后端。"""
         try:
             import base64
-            import re
+
+            from meapet.agent.base import ImageAttachment
+            from meapet.async_runtime import run as run_async
+            from meapet.vision.coordinator import VisionCoordinator
+            from meapet.vision.observation import parse_vision_observation
 
             self.last_voice_text = ""
-
-            log.info(f"[thread] started, idle_minutes={self.idle_minutes}, backend={self.backend}")
-            # ========== 1) 截屏 ==========
+            self.last_voice_language = ""
+            self.last_tts_style = ""
+            if self.mode == "disabled":
+                self.silent.emit()
+                return
+            if self._reply_adapter is None:
+                raise RuntimeError("主回复后端未就绪")
             if self._stop:
                 return
+
             self.progress.emit(STAGE_CAPTURE)
-            img = ImageGrab.grab()
-            log.info(f"[screenshot] captured: size={img.size}, mode={img.mode}")
-
-            import os
-            save_dir = "screenshots"                     # 可改为配置项
-            os.makedirs(save_dir, exist_ok=True)
-            from datetime import datetime
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            save_path = os.path.join(save_dir, f"screenshot_{timestamp}.png")
-            img.save(save_path)
-            log.info(f"[screenshot] saved to {save_path}")
-
-
-            ratio = 320 / img.width
+            image = self._capture_image()
+            log.info(
+                f"[screenshot] captured in memory: size={image.size}, mode={image.mode}"
+            )
+            ratio = 1280 / max(1, image.width)
             if ratio < 1.0:
                 img = img.resize((320, int(img.height * ratio)))
             buf = io.BytesIO()
@@ -322,145 +465,41 @@ class ScreenWatcher(QThread):
 
             if self._stop:
                 return
+
+            coordinator = VisionCoordinator(self._reply_adapter)
             self.progress.emit(STAGE_SUMMARY)
-
-            prompt = UNIFIED_WATCH_PROMPT.format(idle_minutes=int(self.idle_minutes))
-            raw = ""
-
-            log.info(f"[model] calling: backend={self.backend}, model={self.vision_model if self.backend=='ollama' else self.mimo_model}, prompt_len={len(prompt)}")
-
-
-
-            # ========== 2) 一次多模态 ==========
-            if self.backend == "mimo":
-                headers = {
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                }
-
-                log.info(f"[mimo] request: url={self.api_base}/chat/completions, model={self.mimo_model}, max_tokens=2048")
-
-                if self.api_key:
-                    headers["api-key"] = self.api_key
-                resp = self._http_post(
-                    f"{self.api_base}/chat/completions",
-                    headers=headers,
-                    json={
-                        "model": self.mimo_model,
-                        "messages": [
-                            {
-                                "role": "system",
-                                "content": "你是梅尔。严格按用户要求的行格式输出，不要解释。",
-                            },
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "text", "text": prompt},
-                                    {
-                                        "type": "image_url",
-                                        "image_url": {
-                                            "url": f"data:image/jpeg;base64,{b64}"
-                                        },
-                                    },
-                                ],
-                            },
-                        ],
-                        "max_tokens": 2048,
-                        "max_completion_tokens": 2048,
-                        "temperature": 0.7,
-                        "thinking": {"type": "enabled"},
-                    },
-                    timeout=600,
+            if self.mode == "inherit":
+                operation = coordinator.inherit(
+                    attachment,
+                    idle_minutes=self.idle_minutes,
+                    frontend_context=self._frontend_context,
+                    tts_enabled=self._tts_enabled,
                 )
-
-                log.info(f"[mimo] response: status={resp.status_code}")
-
-                if self._stop:
-                    return
-                if resp.status_code == 200:
-                    msg = (resp.json().get("choices") or [{}])[0].get("message") or {}
-                    rc = (msg.get("reasoning_content") or "").strip()
-                    raw = self._mimo_extract_text(msg)
-                    log.info(
-                        f"[mimo] one-shot success: content_len={len(raw)} reasoning_len={len(rc)} "
-                        f"model={self.mimo_model}"
-                    )
-                    if rc and not (msg.get("content") or "").strip():
-                        log.info("[mimo] used reasoning tail as fallback")
-                else:
-                    body = (resp.text or "").replace("\n", " ").strip()
-                    log.warn(
-                        f"[mimo] HTTP {resp.status_code} "
-                        f"model={self.mimo_model} body_len={len(body)}"
-                    )
-                    log.debug(f"[mimo] error body: {body[:500]}")
-                    self.progress.emit(STAGE_ERROR)
-                    self.error.emit(f"偷看失败: HTTP {resp.status_code}")
-                    return
+            elif self.mode == "relay":
+                raw_observation = self._request_visual_observation(encoded)
+                observation = parse_vision_observation(raw_observation)
+                if observation is None:
+                    raise RuntimeError("视觉模型未返回可用观察")
+                operation = coordinator.relay(
+                    observation,
+                    idle_minutes=self.idle_minutes,
+                    frontend_context=self._frontend_context,
+                    tts_enabled=self._tts_enabled,
+                )
             else:
-                # Ollama 视觉：一张图一次 generate
-                resp = self._http_post(
-                    f"{self.host}/api/generate",
-                    json={
-                        "model": self.vision_model,
-                        "prompt": prompt,
-                        "images": [b64],
-                        "stream": False,
-                        "options": {"num_predict": 200, "temperature": 0.7},
-                    },
-                    timeout=600,
-                )
-                if self._stop:
-                    return
-                log.info(f"[ollama] response status={resp.status_code}")
-                if resp.status_code != 200:
-                    self.progress.emit(STAGE_ERROR)
-                    self.error.emit(f"偷看失败: {resp.status_code}")
-                    return
-                raw = (resp.json().get("response") or "").strip()
-                log.debug(f"[ollama] raw output ({len(raw)} chars):\n{raw}")
+                raise RuntimeError(f"不支持的视觉模式: {self.mode}")
 
-                log.info(f"[ollama] raw response chars={len(raw)}")
-                log.debug(f"[ollama] raw first 300 chars: {raw[:300]!r}")
-
-            log.info(f"[parse] one-shot response chars={len(raw or '')}")
-            log.debug(f"[parse] raw: {(raw or '')[:200]!r}")
-            should_speak, display, voice, mood, _hint = parse_watch_output(raw)
-            log.info(f"[parse] result: should_speak={should_speak}, mood={mood}, display_len={len(display)}, voice_len={len(voice)}")
-
-            if not should_speak:
-                self.progress.emit(STAGE_SILENT)
-                log.info(f"[parse] silent decision (idle_minutes={self.idle_minutes})")
-                self.silent.emit()
+            reply = run_async(operation, timeout=660)
+            if self._stop:
                 return
-
-            # 轻清洗显示文本
-            display = re.sub(r'["\'「」『』`]', '', display or '')
-            display = re.sub(r'```', '', display).strip()
-            if not display:
-                display = "……没什么好说的喵。（尾巴轻轻晃了晃）"
-                mood = mood or "neutral"
-
-            # 日语给 TTS；没有则 TTS 侧再回退翻译
-            self.last_voice_text = voice or ""
-            if voice:
-                log.info(f"[parse] bilingual voice chars={len(voice)}")
-                log.debug(f"[parse] bilingual voice_jp={voice[:40]!r}")
-            else:
-                log.info("[parse] no japanese line, TTS will fallback to translation/original")
-
-            # 情绪兜底
-            if not mood or mood == "neutral":
-                mood = self._guess_mood(display, "", self.idle_minutes)
-
-            self.progress.emit(STAGE_ROAST)
-            self.result_ready.emit(display, mood)
-
-        except Exception as e:
+            self._emit_vision_reply(reply)
+        except Exception as exc:
             self.progress.emit(STAGE_ERROR)
-            log.error(f"[run] exception: {type(e).__name__}: {e}")
-            log.error(f"[run] traceback:\n{traceback.format_exc()}")
-            self.error.emit(str(e))
+            log.error(f"[run] exception: {type(exc).__name__}: {exc}")
+            if debug_enabled():
+                log.debug(f"[run] traceback:\n{traceback.format_exc()}")
+            safe_message = getattr(exc, "safe_message", "") or str(exc)
+            self.error.emit(safe_message)
 
     # ---- 搜索回传接口 ----
     _search_pending = True
@@ -507,7 +546,7 @@ class ScreenWatcher(QThread):
                 )
                 return text
             body = (resp.text or "").replace("\n", " ").strip()
-            log.warn(
+            log.warning(
                 f"[mimo_chat] HTTP {resp.status_code} "
                 f"model={self.mimo_model} body_len={len(body)}"
             )

@@ -83,7 +83,7 @@ class TtsGsvMixin:
 
             log.info(f"子进程返回 (rc={proc.returncode}, {elapsed:.1f}s)")
             if stderr_text.strip():
-                log.warn(f"stderr chars={len(stderr_text.strip())}")
+                log.warning(f"stderr chars={len(stderr_text.strip())}")
                 if debug_enabled():
                     log.debug(f"stderr [debug]: {stderr_text.strip()[-200:]}")
 
@@ -96,7 +96,7 @@ class TtsGsvMixin:
             # 取最后一行非空 JSON
             lines = [l.strip() for l in stdout_text.split('\n') if l.strip()]
             if not lines:
-                log.warn("TTS: 子进程无输出")
+                log.warning("TTS: 子进程无输出")
                 return None, ""
             last_line = lines[-1]
             result = json.loads(last_line)
@@ -108,7 +108,7 @@ class TtsGsvMixin:
                     log.debug(f"TTS subprocess error [debug]: {err}")
                 if result.get("captured"):
                     captured = str(result["captured"])
-                    log.warn(f"captured chars={len(captured)}")
+                    log.warning(f"captured chars={len(captured)}")
                     if debug_enabled():
                         log.debug(f"captured [debug]: {captured[:300]}")
                 return None, ""
@@ -133,36 +133,66 @@ class TtsGsvMixin:
                 log.debug(traceback.format_exc())
             return None, ""
 
-    def _get_ref_paths(self, mood: str) -> tuple:
+    def _get_ref_paths(
+        self,
+        mood: str,
+        voice_language: str = "",
+    ) -> tuple:
         """
         根据情绪获取 (参考音频路径, 参考文本, 语言)
         返回 (wav_path, ref_text, lang) 或 (None, None, None)
         根据 voice_lang 选择对应语言的参考文件（zh_* / jp_*）
         """
-        explicit_ref = str(getattr(self, "gsv_ref_wav", "") or "").strip()
+        target_language = normalize_gsv_ref_language(
+            voice_language or getattr(self, "voice_lang", "jp")
+        )
+        references = getattr(self, "reference_audios", {})
+        mapped_reference = (
+            references.get(target_language)
+            if isinstance(references, dict)
+            else None
+        )
+        mapped_text = ""
+        reference_language = target_language
+        if isinstance(mapped_reference, dict):
+            explicit_ref = str(mapped_reference.get("path") or "").strip()
+            mapped_text = str(mapped_reference.get("text") or "").strip()
+        else:
+            explicit_ref = str(mapped_reference or "").strip()
+
+        # 旧单条配置仅在未指定本轮语言，或其语言与本轮一致时继续生效。
+        if not explicit_ref:
+            legacy_language = normalize_gsv_ref_language(
+                getattr(self, "gsv_ref_lang", "jp")
+            )
+            if not voice_language or legacy_language == target_language:
+                explicit_ref = str(
+                    getattr(self, "gsv_ref_wav", "") or ""
+                ).strip()
+                reference_language = legacy_language
+
         if explicit_ref:
             if os.path.isfile(explicit_ref):
                 sidecar_text = os.path.splitext(explicit_ref)[0] + ".txt"
-                ref_text = ""
-                try:
-                    with open(sidecar_text, "r", encoding="utf-8") as f:
-                        ref_text = f.read().strip()
-                except FileNotFoundError:
-                    log.warning(
-                        "指定参考音频没有同名 .txt，将使用空参考文本: "
-                        f"{os.path.basename(explicit_ref)}"
-                    )
-                except OSError as exc:
-                    log.warning(
-                        "读取指定参考文本失败，将使用空参考文本: "
-                        f"{type(exc).__name__}"
-                    )
+                ref_text = mapped_text
+                if not ref_text:
+                    try:
+                        with open(sidecar_text, "r", encoding="utf-8") as f:
+                            ref_text = f.read().strip()
+                    except FileNotFoundError:
+                        log.warning(
+                            "指定参考音频没有同名 .txt，将使用空参考文本: "
+                            f"{os.path.basename(explicit_ref)}"
+                        )
+                    except OSError as exc:
+                        log.warning(
+                            "读取指定参考文本失败，将使用空参考文本: "
+                            f"{type(exc).__name__}"
+                        )
                 return (
                     explicit_ref,
                     ref_text,
-                    _gsv_language_label(
-                        getattr(self, "gsv_ref_lang", "jp")
-                    ),
+                    _gsv_language_label(reference_language),
                 )
             log.warning(
                 "指定参考音频不存在，回退按情绪自动选择: "
@@ -173,7 +203,7 @@ class TtsGsvMixin:
         ref_folder = os.path.join(self.ref_dir, ref_type)
 
         # 与配置 voice_lang 对齐；缺省日语（本地 GSV 传统路径）
-        vlang = (getattr(self, "voice_lang", "") or "jp").strip().lower()
+        vlang = target_language
         if vlang in ("zh", "cn", "zh-cn", "zh_cn", "chinese", "中文", "汉语"):
             prefixes = ("zh_", "cn_")
             lang_label = "中文"
@@ -203,8 +233,10 @@ class TtsGsvMixin:
 
         wav_file, txt_file = _scan(prefixes)
 
-        # 目标语言缺失时回退另一套，避免完全无参考
-        if not wav_file or not txt_file:
+        # 只有旧调用（未显式指定本轮语言）允许跨语言回退。
+        # 新对话协议会传 voice_language，此时宁可跳过语音，
+        # 也不能把中文原文与日语参考音频错配。
+        if (not wav_file or not txt_file) and not voice_language:
             if prefixes[0].startswith("zh") or prefixes[0].startswith("en"):
                 fallback = ("jp_", "ja_")
                 fallback_label = "日文"
@@ -213,7 +245,7 @@ class TtsGsvMixin:
                 fallback_label = "中文"
             alt_wav, alt_txt = _scan(fallback)
             if alt_wav and alt_txt:
-                log.warn(
+                log.warning(
                     f"无 {prefixes[0]}* 参考，回退 {os.path.basename(alt_wav)}"
                 )
                 wav_file, txt_file = alt_wav, alt_txt
@@ -221,9 +253,9 @@ class TtsGsvMixin:
 
         if not wav_file or not txt_file:
             if not os.path.isdir(ref_folder):
-                log.warn(f"Ref folder not found: {ref_folder}")
+                log.warning(f"Ref folder not found: {ref_folder}")
             else:
-                log.warn(f"No ref audio for mood={mood} type={ref_type}")
+                log.warning(f"No ref audio for mood={mood} type={ref_type}")
             return None, None, None
 
         with open(txt_file, "r", encoding="utf-8") as f:

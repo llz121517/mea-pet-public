@@ -7,6 +7,7 @@ from meapet.config.store import (
     load_config as store_load_config,
     save_config as store_save_config,
     normalize_config,
+    resolve_writable_config_path,
 )
 from meapet.log import get_color_logger
 
@@ -15,6 +16,8 @@ log = get_color_logger("config_bridge")
 
 class PetConfigBridgeMixin:
     def _load_config(self, path: str) -> dict:
+        # 记住读取路径；保存时映射到可写 config.json（example → config.json）
+        self._config_path = resolve_writable_config_path(path)
         try:
             return store_load_config(path)
         except Exception:
@@ -27,9 +30,73 @@ class PetConfigBridgeMixin:
     def _save_config(self):
         try:
             self.config = normalize_config(self.config)
-            store_save_config(self.config)
+            target = getattr(self, "_config_path", None) or resolve_writable_config_path()
+            self._config_path = target
+            store_save_config(self.config, target)
         except Exception as e:
             log.error(f"[config] 保存失败: {e}")
+
+    def _apply_runtime_config(self, config: dict) -> bool:
+        """在主线程原子切换活动后端；失败时不自动回退另一后端。"""
+        worker = getattr(self, "_chat_worker", None)
+        if worker is not None:
+            try:
+                worker.terminate()
+                worker.wait(1000)
+                worker.deleteLater()
+            except Exception:
+                pass
+        self._chat_worker = None
+        for name in ("_chat_poll", "_chat_timeout"):
+            timer = getattr(self, name, None)
+            if timer is not None:
+                try:
+                    timer.stop()
+                except Exception:
+                    pass
+
+        invalidate = getattr(self, "_invalidate_active_conversation", None)
+        if callable(invalidate):
+            invalidate()
+        stop_control = getattr(self, "_stop_control", None)
+        if callable(stop_control):
+            stop_control()
+        self._disconnect_watcher_signals()
+
+        old_adapter = getattr(self, "agent_adapter", None)
+        close = getattr(old_adapter, "close", None)
+        if callable(close):
+            try:
+                result = close()
+                if result is not None:
+                    from meapet.async_runtime import submit
+
+                    submit(result)
+            except Exception:
+                pass
+
+        self.config = normalize_config(config or {})
+        try:
+            apply_motion = getattr(self, "_apply_motion_preference", None)
+            if callable(apply_motion):
+                apply_motion()
+            self._init_tts()
+            self._init_chat()
+            self._init_watcher()
+            self._init_control()
+        except Exception as exc:
+            log.error(
+                f"[config] 运行时应用失败: {type(exc).__name__}: {exc}"
+            )
+            show = getattr(self, "_show_bubble", None)
+            if callable(show):
+                show("新配置未能启动，请检查配置。", 8000, mood=None)
+            return False
+
+        show = getattr(self, "_show_bubble", None)
+        if callable(show):
+            show("新配置已应用。", 3500, mood=None)
+        return True
 
     def _disconnect_watcher_signals(self):
         if not hasattr(self, "_watcher") or self._watcher is None:

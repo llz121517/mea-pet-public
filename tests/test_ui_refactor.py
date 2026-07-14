@@ -1214,6 +1214,39 @@ class UiRefactorTests(unittest.TestCase):
         self.assertEqual(dialog.result(), QDialog.Accepted)
         self.assertFalse(dialog.auto_cancelled)
 
+    def test_capture_consent_lets_user_override_scope_for_this_request_only(self) -> None:
+        from meapet.desktop.dialogs import CaptureScopeConsentDialog
+
+        dialog = self._track(
+            CaptureScopeConsentDialog(
+                requested_scope="full_screen",
+                timeout_seconds=15,
+            )
+        )
+        self.assertEqual(dialog.scope_combo.currentData(), "full_screen")
+        self.assertEqual(dialog.countdown_label.text(), "15 秒后自动取消。")
+        dialog._tick()
+        self.assertEqual(dialog.countdown_label.text(), "14 秒后自动取消。")
+        dialog.scope_combo.setCurrentIndex(
+            dialog.scope_combo.findData("region")
+        )
+        dialog.region_x.setValue(-120)
+        dialog.region_y.setValue(40)
+        dialog.region_width.setValue(1280)
+        dialog.region_height.setValue(720)
+
+        dialog.show()
+        dialog._timer.stop()
+        dialog.allow_button.click()
+
+        self.assertEqual(dialog.result(), QDialog.Accepted)
+        self.assertEqual(dialog.approval.scope, "region")
+        self.assertEqual(
+            dialog.approval.region,
+            {"x": -120, "y": 40, "width": 1280, "height": 720},
+        )
+        self.assertEqual(dialog.approval.application, "")
+
     def test_watcher_cloud_confirmation_uses_themed_safe_dialog(self) -> None:
         from meapet.desktop.watch_ctrl import PetWatcherMixin
 
@@ -1490,7 +1523,7 @@ class UiRefactorTests(unittest.TestCase):
         page._sync_engine_details_visibility()
         self.assertFalse(page.backend_combo.isHidden())
 
-    def test_gsv_reference_audio_path_and_language_are_restored_and_saved(self) -> None:
+    def test_gsv_reference_audio_paths_are_restored_and_saved_per_language(self) -> None:
         from wizard.app import SetupWizard
 
         wizard = self._track(SetupWizard())
@@ -1503,21 +1536,64 @@ class UiRefactorTests(unittest.TestCase):
             {
                 "engine": "gpt_sovits",
                 "enabled": True,
-                "gsv_ref_wav": "./refs/custom.wav",
-                "gsv_ref_lang": "zh",
+                "gsv_ref_wav": "./refs/legacy-ja.wav",
+                "gsv_ref_lang": "jp",
+                "reference_audios": {
+                    "jp": {"path": "./refs/jp.wav", "text": ""},
+                    "zh": {"path": "./refs/zh.wav", "text": "你好"},
+                    "en": {"path": "./refs/en.wav", "text": ""},
+                },
             }
         )
 
-        path_input = wizard.tts_page.gsv_ref_wav_input
-        lang_combo = wizard.tts_page.gsv_ref_lang_combo
-        self.assertEqual(path_input.text(), "./refs/custom.wav")
-        self.assertEqual(lang_combo.currentData(), "zh")
-        self.assertTrue(path_input.accessibleName())
-        self.assertTrue(lang_combo.accessibleName())
+        inputs = wizard.tts_page.gsv_reference_inputs
+        self.assertEqual(set(inputs), {"jp", "zh", "en"})
+        self.assertEqual(inputs["jp"].text(), "./refs/jp.wav")
+        self.assertEqual(inputs["zh"].text(), "./refs/zh.wav")
+        self.assertEqual(inputs["en"].text(), "./refs/en.wav")
+        self.assertTrue(all(widget.accessibleName() for widget in inputs.values()))
 
         tts_config = wizard.collect_config()["tts"]
-        self.assertEqual(tts_config["gsv_ref_wav"], "./refs/custom.wav")
-        self.assertEqual(tts_config["gsv_ref_lang"], "zh")
+        self.assertEqual(
+            tts_config["reference_audios"],
+            {
+                "jp": {"path": "./refs/jp.wav", "text": ""},
+                "zh": {"path": "./refs/zh.wav", "text": "你好"},
+                "en": {"path": "./refs/en.wav", "text": ""},
+            },
+        )
+        self.assertEqual(tts_config["gsv_ref_wav"], "./refs/jp.wav")
+        self.assertEqual(tts_config["gsv_ref_lang"], "jp")
+
+    def test_translation_is_an_explicit_language_fallback_not_a_model_fallback(self) -> None:
+        from wizard.app import SetupWizard
+
+        wizard = self._track(SetupWizard())
+        wizard._load_timer.stop()
+        for timer in wizard.tts_page._startup_timers:
+            timer.stop()
+        wizard._existing_config = {}
+
+        wizard.tts_page.apply_config(
+            {
+                "engine": "gpt_sovits",
+                "enabled": True,
+                "translate_to_jp": True,
+                "translate_target_language": "zh",
+                "translate_api_key": "translate-test-key",
+            }
+        )
+
+        page = wizard.tts_page
+        self.assertTrue(page.translation_enabled_cb.isChecked())
+        self.assertEqual(page.translate_target_combo.currentData(), "zh")
+        self.assertIn("输出语言不受支持", page.translation_enabled_cb.text())
+        self.assertNotIn("免费翻译失效", page.translate_key.placeholderText())
+
+        tts_config = wizard.collect_config()["tts"]
+        self.assertTrue(tts_config["translate_to_jp"])
+        self.assertEqual(tts_config["translate_target_language"], "zh")
+        self.assertEqual(tts_config["translate_api_key"], "translate-test-key")
 
     def test_tray_menu_offers_standby_recovery(self) -> None:
         from meapet.desktop.window_chrome import PetWindowChromeMixin

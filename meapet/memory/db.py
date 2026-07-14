@@ -19,7 +19,7 @@ log = get_color_logger("memory")
 from meapet.paths import project_path
 
 DB_PATH = project_path("mea_memory.db")
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 VECTOR_DIM = 1024
 
 # ========================
@@ -193,6 +193,30 @@ class MeaMemory:
             )
         """)
 
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS conversation_turns (
+                mode TEXT NOT NULL,
+                profile_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                turn_id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                user_text TEXT NOT NULL DEFAULT '',
+                segments TEXT NOT NULL DEFAULT '[]',
+                system_entries TEXT NOT NULL DEFAULT '[]',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                status TEXT NOT NULL,
+                error_text TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (mode, profile_id, session_id, turn_id)
+            )
+        """)
+        c.execute("""
+            CREATE INDEX IF NOT EXISTS idx_conversation_turns_recent
+            ON conversation_turns (
+                mode, profile_id, session_id, updated_at DESC
+            )
+        """)
+
         self.conn.commit()
         log.debug("[DB] 数据表初始化完成")
 
@@ -240,6 +264,8 @@ class MeaMemory:
                 c.execute("UPDATE memories SET last_decay = COALESCE(last_recalled, created) WHERE last_decay IS NULL OR last_decay = 0")
             except sqlite3.OperationalError:
                 pass
+
+        # 迁移 4 的 conversation_turns 表由 _init_tables 幂等创建。
 
         # 为没有 embedding 的记忆计算 embedding
         c.execute("SELECT id, content, embedding FROM memories WHERE embedding IS NULL OR embedding = ''")
@@ -427,6 +453,188 @@ class MeaMemory:
             c.execute("SELECT COUNT(*) FROM chat_history WHERE timestamp >= ?", (since,))
             row = c.fetchone()
             return row[0] if row else 0
+
+    # ========================
+    # 隔离会话时间线
+    # ========================
+    def save_conversation_turn(self, turn, *, max_turns: int = 5) -> None:
+        """保存一个终态交互，并按 ConversationKey 独立裁剪。"""
+        from meapet.conversation.timeline import TurnTranscript
+
+        if not isinstance(turn, TurnTranscript):
+            raise TypeError("turn must be a TurnTranscript")
+        limit = max(0, min(int(max_turns), 100))
+        key = turn.conversation_key
+        with self._lock:
+            c = self.conn.cursor()
+            if limit == 0:
+                c.execute(
+                    "DELETE FROM conversation_turns "
+                    "WHERE mode = ? AND profile_id = ? AND session_id = ?",
+                    (key.mode, key.profile_id, key.session_id),
+                )
+                self.conn.commit()
+                return
+
+            segments = json.dumps(
+                [
+                    {
+                        "index": segment.index,
+                        "display_text": segment.display_text,
+                        "voice_text": segment.voice_text,
+                        "voice_language": segment.voice_language,
+                        "mood": segment.mood,
+                        "tts_style": segment.tts_style,
+                    }
+                    for segment in turn.segments
+                ],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            system_entries = json.dumps(
+                [
+                    {
+                        "state": entry.state,
+                        "safe_text": entry.safe_text,
+                        "created_at": entry.created_at,
+                    }
+                    for entry in turn.system_entries
+                ],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            c.execute(
+                """
+                INSERT INTO conversation_turns (
+                    mode, profile_id, session_id, turn_id, source, user_text,
+                    segments, system_entries, created_at, updated_at,
+                    status, error_text
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(mode, profile_id, session_id, turn_id) DO UPDATE SET
+                    source = excluded.source,
+                    user_text = excluded.user_text,
+                    segments = excluded.segments,
+                    system_entries = excluded.system_entries,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at,
+                    status = excluded.status,
+                    error_text = excluded.error_text
+                """,
+                (
+                    key.mode,
+                    key.profile_id,
+                    key.session_id,
+                    turn.turn_id,
+                    turn.source,
+                    turn.user_text,
+                    segments,
+                    system_entries,
+                    float(turn.created_at),
+                    float(turn.updated_at),
+                    turn.status,
+                    turn.error_text,
+                ),
+            )
+            c.execute(
+                """
+                DELETE FROM conversation_turns
+                WHERE mode = ? AND profile_id = ? AND session_id = ?
+                  AND turn_id NOT IN (
+                    SELECT turn_id FROM conversation_turns
+                    WHERE mode = ? AND profile_id = ? AND session_id = ?
+                    ORDER BY updated_at DESC, turn_id DESC
+                    LIMIT ?
+                  )
+                """,
+                (
+                    key.mode,
+                    key.profile_id,
+                    key.session_id,
+                    key.mode,
+                    key.profile_id,
+                    key.session_id,
+                    limit,
+                ),
+            )
+            self.conn.commit()
+
+    def load_conversation_turns(self, *, max_total: int = 500):
+        """读取最近的本地投影；坏记录逐条跳过，不影响启动。"""
+        from meapet.conversation.timeline import (
+            ConversationKey,
+            SystemTimelineEntry,
+            TurnTranscript,
+        )
+        from meapet.conversation.types import ReplySegment
+
+        limit = max(0, min(int(max_total), 5000))
+        if limit == 0:
+            return ()
+        with self._lock:
+            rows = self.conn.execute(
+                """
+                SELECT * FROM conversation_turns
+                ORDER BY updated_at DESC, turn_id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+        turns = []
+        for row in reversed(rows):
+            try:
+                raw_segments = json.loads(row["segments"] or "[]")
+                raw_entries = json.loads(row["system_entries"] or "[]")
+                if not isinstance(raw_segments, list) or not isinstance(
+                    raw_entries,
+                    list,
+                ):
+                    continue
+                segments = tuple(
+                    ReplySegment(
+                        index=int(item.get("index", index)),
+                        display_text=str(item.get("display_text") or "")[:100_000],
+                        voice_text=str(item.get("voice_text") or "")[:100_000],
+                        voice_language=item.get("voice_language") or "",
+                        mood=item.get("mood") or "neutral",
+                        tts_style=str(item.get("tts_style") or "")[:1000],
+                    )
+                    for index, item in enumerate(raw_segments[:100])
+                    if isinstance(item, dict)
+                )
+                entries = tuple(
+                    SystemTimelineEntry(
+                        state=str(item.get("state") or "running")[:64],
+                        safe_text=str(item.get("safe_text") or "")[:10_000],
+                        created_at=float(item.get("created_at") or row["created_at"]),
+                    )
+                    for item in raw_entries[:500]
+                    if isinstance(item, dict)
+                )
+                status = str(row["status"] or "error").strip().lower()
+                if status not in {"complete", "error", "cancelled"}:
+                    status = "error"
+                turns.append(
+                    TurnTranscript(
+                        conversation_key=ConversationKey(
+                            row["mode"],
+                            row["profile_id"],
+                            row["session_id"],
+                        ),
+                        turn_id=str(row["turn_id"] or "")[:256],
+                        source=str(row["source"] or "system")[:64],
+                        user_text=str(row["user_text"] or "")[:100_000],
+                        segments=segments,
+                        system_entries=entries,
+                        created_at=float(row["created_at"]),
+                        updated_at=float(row["updated_at"]),
+                        status=status,
+                        error_text=str(row["error_text"] or "")[:10_000],
+                    )
+                )
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+        return tuple(turns)
 
     # ========================
     # 事件日志
@@ -1171,6 +1379,7 @@ class MeaMemory:
             c.execute("DELETE FROM mea_state")
             c.execute("DELETE FROM events")
             c.execute("DELETE FROM memories")
+            c.execute("DELETE FROM conversation_turns")
             self.conn.commit()
         self._ensure_defaults()
         log.debug("[DB] 所有数据已重置")

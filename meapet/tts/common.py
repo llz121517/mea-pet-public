@@ -103,7 +103,7 @@ def _install_modules(py_exe: str, packages: list[str],
         log.info(f"pip install {len(packages)} 个包 …")
         r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
         if r.returncode != 0:
-            log.warn(f"  pip 失败: {r.stderr[-200:]}")
+            log.warning(f"  pip 失败: {r.stderr[-200:]}")
             return False
         log.info("pip 成功")
         return True
@@ -128,8 +128,8 @@ def auto_install_gsv_deps(py_exe: str, allow_download: bool = False) -> bool:
         return True
 
     if not allow_download:
-        log.warn(f"缺少 {len(missing)} 个依赖：{', '.join(missing[:6])}{'…' if len(missing)>6 else ''}")
-        log.warn("  → 默认不自动 pip 安装。请手动安装，或设置 MEAPET_ALLOW_DOWNLOAD=1 / tts.auto_install_deps=true")
+        log.warning(f"缺少 {len(missing)} 个依赖：{', '.join(missing[:6])}{'…' if len(missing)>6 else ''}")
+        log.warning("  → 默认不自动 pip 安装。请手动安装，或设置 MEAPET_ALLOW_DOWNLOAD=1 / tts.auto_install_deps=true")
         return False
 
     log.info(f"缺少 {len(missing)} 个依赖，按需安装 …")
@@ -151,7 +151,7 @@ def auto_install_gsv_deps(py_exe: str, allow_download: bool = False) -> bool:
     still = [p for p in GSV_REQUIRED_PACKAGES
              if not _has_module(py_exe, _get_import_name(p))]
     if still:
-        log.warn(f"仍有 {len(still)} 个包未装: {still}")
+        log.warning(f"仍有 {len(still)} 个包未装: {still}")
         return False
 
     log.info("所有依赖安装完成")

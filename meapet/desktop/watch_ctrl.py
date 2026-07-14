@@ -20,12 +20,7 @@ from meapet.config.store import (
     resolve_vision_host,
 )
 from meapet.log import get_color_logger
-
-
-from meapet.config.store import save_config, config_path
-
-def _save_config(self, config: dict) -> None:
-    save_config(config, path=config_path())
+from meapet.vision.policy import resolve_vision_route
 
 log = get_color_logger("watch_ctrl")
 
@@ -56,16 +51,37 @@ class PetWatcherMixin:
         llm_cfg = self.config.get("llm", {}) or {}
         return resolve_vision_backend(vision_cfg, llm_cfg)
 
+    def _vision_route(self):
+        return resolve_vision_route(
+            self.config.get("vision", {}) or {},
+            self.config.get("llm", {}) or {},
+        )
+
     def _vision_endpoint(self) -> str:
         """返回识图请求的实际目标地址。"""
         vision_cfg = self.config.get("vision", {}) or {}
         llm_cfg = self.config.get("llm", {}) or {}
+        if self._vision_route().mode == "inherit":
+            if str(llm_cfg.get("mode") or "direct").lower() == "agent":
+                agent = llm_cfg.get("agent") or {}
+                return str(agent.get("base_url") or "")
+            direct = llm_cfg.get("direct") or {}
+            protocol = str(direct.get("protocol") or "").lower()
+            if protocol == "ollama_chat":
+                return str(
+                    direct.get("host")
+                    or llm_cfg.get("host")
+                    or "http://127.0.0.1:11434"
+                )
+            return str(direct.get("api_base") or llm_cfg.get("api_base") or "")
         if self._vision_backend() == "mimo":
             return resolve_vision_api_base(vision_cfg, llm_cfg)
         return resolve_vision_host(vision_cfg, llm_cfg)
 
     def _is_cloud_vision(self) -> bool:
         """判断截图是否会离开本机；未知或远程目标按云端处理。"""
+        if self._vision_route().mode == "inherit":
+            return not is_loopback_url(self._vision_endpoint())
         backend = self._vision_backend()
         if backend == "mimo":
             return True
@@ -107,6 +123,18 @@ class PetWatcherMixin:
     def _do_screen_watch(self, force: bool = False):
         """Screenshot + vision roast. Cloud path must pass confirmation first."""
         watcher_cfg = self.config.get("watcher", {})
+        route = self._vision_route()
+        if route.mode == "disabled":
+            return
+        if not route.available:
+            log.warning(f"[watcher] vision route unavailable: {route.reason}")
+            self._show_bubble(
+                status_language.vision_mode_unavailable(route.reason),
+                5000,
+            )
+            if hasattr(self, "_watcher_timer"):
+                self._start_watcher_timer()
+            return
         if not watcher_cfg.get("enabled", False) and not force:
             return
         if self._standby and not force:
@@ -145,6 +173,18 @@ class PetWatcherMixin:
         )
         idle_s = time.time() - self._last_interaction_time
         self._watcher.set_idle_minutes(idle_s / 60.0)
+        reply_adapter = (
+            getattr(self, "agent_adapter", None)
+            if self._is_agent_mode()
+            else getattr(self, "chat_engine", None)
+        )
+        self._watcher.configure_reply(
+            reply_adapter,
+            frontend_context=self._build_agent_frontend_context(),
+            tts_enabled=bool(
+                getattr(getattr(self, "tts", None), "enabled", False)
+            ),
+        )
         if self._is_cloud_vision():
             self._show_bubble("（已确认）梅尔酱偷看并上传识别中…", 30000)
         else:
@@ -161,24 +201,46 @@ class PetWatcherMixin:
         try:
             self._pending_reply = (text, mood)
             _log_private_text("[watch] _pending_reply 已设置", text)
-            # TTS：优先用一次多模态返回的日语行，避免再走翻译
-            voice = text
+            voice = ""
+            voice_language = ""
+            tts_style = ""
             try:
                 w = getattr(self, "_watcher", None)
-                jp = (getattr(w, "last_voice_text", "") or "").strip() if w is not None else ""
-                if jp:
-                    voice = jp
-                    _log_private_text("[watch] TTS 使用日语行", jp)
-                    # 取用后清空，避免下次误用
-                    try:
-                        w.last_voice_text = ""
-                    except Exception:
-                        pass
-                else:
-                    log.info("[watch] 无日语行，TTS 用中文（可能回退翻译）")
+                if w is not None:
+                    voice = str(getattr(w, "last_voice_text", "") or "").strip()
+                    voice_language = str(
+                        getattr(w, "last_voice_language", "") or ""
+                    ).strip()
+                    tts_style = str(
+                        getattr(w, "last_tts_style", "") or ""
+                    ).strip()
+                    w.last_voice_text = ""
+                    w.last_voice_language = ""
+                    w.last_tts_style = ""
             except Exception as e:
-                log.error(f"[watch] 取日语行失败: {type(e).__name__}")
-            self._watch_tts_worker = TTSWorker(self.tts, voice, mood=mood)
+                log.error(f"[watch] 取语音元数据失败: {type(e).__name__}")
+            tts = getattr(self, "tts", None)
+            if (
+                tts is None
+                or not bool(getattr(tts, "enabled", False))
+                or not voice
+                or not voice_language
+            ):
+                self.show_reply(
+                    text,
+                    mood,
+                    duration_ms=self.config["bubble_duration_ms"]["watch"],
+                )
+                set_awaiting_reply_state(self, False)
+                self._start_watcher_timer()
+                return
+            self._watch_tts_worker = TTSWorker(
+                tts,
+                voice,
+                mood=mood,
+                style=tts_style,
+                language=voice_language,
+            )
             self._watch_tts_worker.start()
             self._ensure_tts_poll()
         except Exception as e:
@@ -190,7 +252,7 @@ class PetWatcherMixin:
     def _on_watch_tts_and_show(self, raw: str, reply: str = None, mood: str = None):
         log.info(f"[watch] _on_watch_tts_and_show called, raw={raw is not None}, reply={reply is not None}")
         if raw is None or reply is None:
-            log.warn("[TTS] watch tts returned None, skip audio")
+            log.warning("[TTS] watch tts returned None, skip audio")
             if reply and mood:
                 self.show_reply(reply, mood, duration_ms=self.config["bubble_duration_ms"]["watch"])
 

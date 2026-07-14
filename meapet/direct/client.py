@@ -1,0 +1,626 @@
+"""OpenAI Chat、Ollama、Responses 与 Anthropic 的异步流式客户端。"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import AsyncIterator, Mapping, Optional
+from urllib.parse import urlsplit, urlunsplit
+
+import httpx
+
+from meapet.direct.types import (
+    CanonicalChatRequest,
+    ReasoningDelta,
+    StreamDone,
+    TextDelta,
+    UsageEvent,
+)
+
+
+_PROTOCOLS = {
+    "openai_chat",
+    "ollama_chat",
+    "openai_responses",
+    "anthropic_messages",
+}
+
+
+@dataclass(frozen=True)
+class DirectProtocolConfig:
+    protocol: str
+    base_url: str
+    api_key: str = ""
+    timeout_seconds: float = 120.0
+    verify_tls: bool = True
+    ca_file: str = ""
+
+    def __post_init__(self) -> None:
+        protocol = str(self.protocol or "").strip().lower()
+        if protocol not in _PROTOCOLS:
+            raise ValueError("protocol is unsupported")
+        raw_url = str(self.base_url or "").strip().rstrip("/")
+        parsed = urlsplit(raw_url)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("base_url must be an http(s) URL")
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError(
+                "base_url must not contain credentials, query, or fragment"
+            )
+        normalized_url = urlunsplit(
+            (
+                parsed.scheme.lower(),
+                parsed.netloc,
+                parsed.path.rstrip("/"),
+                "",
+                "",
+            )
+        )
+        try:
+            timeout = float(self.timeout_seconds)
+        except (TypeError, ValueError):
+            timeout = 120.0
+        object.__setattr__(self, "protocol", protocol)
+        object.__setattr__(self, "base_url", normalized_url)
+        object.__setattr__(self, "api_key", str(self.api_key or "").strip())
+        object.__setattr__(self, "timeout_seconds", timeout if timeout > 0 else 120.0)
+        object.__setattr__(self, "verify_tls", bool(self.verify_tls))
+        object.__setattr__(self, "ca_file", str(self.ca_file or "").strip())
+
+    def endpoint(self, path: str) -> str:
+        target = "/" + str(path or "").lstrip("/")
+        if self.base_url.lower().endswith("/v1") and target.lower().startswith("/v1/"):
+            target = target[3:]
+        return self.base_url + target
+
+
+class DirectProtocolError(Exception):
+    def __init__(
+        self,
+        category: str,
+        safe_message: str,
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(safe_message)
+        self.category = str(category)
+        self.safe_message = str(safe_message)
+        self.retryable = bool(retryable)
+
+
+@dataclass(frozen=True)
+class _RequestSpec:
+    url: str
+    headers: Mapping[str, str]
+    body: Mapping[str, object]
+    stream_kind: str
+
+
+@dataclass(frozen=True)
+class _SseEvent:
+    event: str
+    data: str
+
+
+async def _iter_sse(response: httpx.Response) -> AsyncIterator[_SseEvent]:
+    event_name = "message"
+    data_lines: list[str] = []
+    async for line in response.aiter_lines():
+        if line == "":
+            if data_lines:
+                yield _SseEvent(event_name, "\n".join(data_lines))
+            event_name = "message"
+            data_lines = []
+            continue
+        if line.startswith(":"):
+            continue
+        field_name, separator, value = line.partition(":")
+        if not separator:
+            continue
+        value = value[1:] if value.startswith(" ") else value
+        if field_name == "event":
+            event_name = value or "message"
+        elif field_name == "data":
+            data_lines.append(value)
+    if data_lines:
+        yield _SseEvent(event_name, "\n".join(data_lines))
+
+
+def _http_error(status_code: int) -> DirectProtocolError:
+    if status_code == 401:
+        return DirectProtocolError(
+            "authentication",
+            "模型接口认证失败，请检查 API Key。",
+        )
+    if status_code == 403:
+        return DirectProtocolError("permission", "模型接口拒绝了当前请求。")
+    if status_code == 429:
+        return DirectProtocolError(
+            "rate_limit",
+            "模型请求过于频繁，请稍后再试。",
+            True,
+        )
+    if status_code >= 500:
+        return DirectProtocolError(
+            "backend_unavailable",
+            "模型服务暂时不可用。",
+            True,
+        )
+    return DirectProtocolError("protocol", "模型接口返回了无法处理的响应。")
+
+
+def _message_list(request: CanonicalChatRequest) -> list[dict[str, object]]:
+    return [dict(message) for message in request.messages]
+
+
+def _data_url(part: Mapping[str, object]) -> str:
+    return (
+        f"data:{part.get('media_type')};base64,{part.get('data')}"
+    )
+
+
+def _openai_messages(
+    request: CanonicalChatRequest,
+) -> list[dict[str, object]]:
+    messages = []
+    for message in request.messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            messages.append(dict(message))
+            continue
+        rendered = []
+        for part in content:
+            if part.get("type") == "text":
+                rendered.append({"type": "text", "text": part.get("text", "")})
+            else:
+                rendered.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": _data_url(part)},
+                    }
+                )
+        messages.append({"role": message.get("role"), "content": rendered})
+    return messages
+
+
+def _ollama_messages(
+    request: CanonicalChatRequest,
+) -> list[dict[str, object]]:
+    messages = []
+    for message in request.messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            messages.append(dict(message))
+            continue
+        text_parts = [
+            str(part.get("text") or "")
+            for part in content
+            if part.get("type") == "text"
+        ]
+        images = [
+            str(part.get("data") or "")
+            for part in content
+            if part.get("type") == "image"
+        ]
+        rendered: dict[str, object] = {
+            "role": message.get("role"),
+            "content": "\n".join(text_parts),
+        }
+        if images:
+            rendered["images"] = images
+        messages.append(rendered)
+    return messages
+
+
+def _responses_input(
+    request: CanonicalChatRequest,
+) -> list[dict[str, object]]:
+    messages = []
+    for message in request.messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            messages.append(dict(message))
+            continue
+        rendered = []
+        for part in content:
+            if part.get("type") == "text":
+                rendered.append(
+                    {"type": "input_text", "text": part.get("text", "")}
+                )
+            else:
+                rendered.append(
+                    {"type": "input_image", "image_url": _data_url(part)}
+                )
+        messages.append({"role": message.get("role"), "content": rendered})
+    return messages
+
+
+def _anthropic_content(parts: list[Mapping[str, object]]) -> list[dict[str, object]]:
+    rendered = []
+    for part in parts:
+        if part.get("type") == "text":
+            rendered.append({"type": "text", "text": part.get("text", "")})
+        else:
+            rendered.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": part.get("media_type"),
+                        "data": part.get("data"),
+                    },
+                }
+            )
+    return rendered
+
+
+def _openai_chat_spec(
+    config: DirectProtocolConfig,
+    request: CanonicalChatRequest,
+) -> _RequestSpec:
+    body: dict[str, object] = {
+        "model": request.model,
+        "messages": _openai_messages(request),
+        "temperature": request.temperature,
+        "max_tokens": request.max_tokens,
+        "stream": request.stream,
+        "stream_options": {"include_usage": True},
+    }
+    if request.response_format is not None:
+        body["response_format"] = dict(request.response_format)
+    body.update(request.extra)
+    headers = {"Accept": "text/event-stream", "Content-Type": "application/json"}
+    if config.api_key:
+        headers["Authorization"] = f"Bearer {config.api_key}"
+    return _RequestSpec(
+        config.endpoint("/v1/chat/completions"),
+        headers,
+        body,
+        "openai_chat",
+    )
+
+
+def _ollama_spec(
+    config: DirectProtocolConfig,
+    request: CanonicalChatRequest,
+) -> _RequestSpec:
+    body: dict[str, object] = {
+        "model": request.model,
+        "messages": _ollama_messages(request),
+        "stream": request.stream,
+        "keep_alive": "30s",
+        "think": False,
+        "options": {
+            "temperature": request.temperature,
+            "num_predict": request.max_tokens,
+        },
+    }
+    if request.response_format is not None:
+        body["format"] = dict(request.response_format)
+    body.update(request.extra)
+    headers = {
+        "Accept": "application/x-ndjson",
+        "Content-Type": "application/json",
+    }
+    if config.api_key:
+        headers["Authorization"] = f"Bearer {config.api_key}"
+    return _RequestSpec(
+        config.endpoint("/api/chat"),
+        headers,
+        body,
+        "ollama_chat",
+    )
+
+
+def _responses_spec(
+    config: DirectProtocolConfig,
+    request: CanonicalChatRequest,
+) -> _RequestSpec:
+    body: dict[str, object] = {
+        "model": request.model,
+        "input": _responses_input(request),
+        "temperature": request.temperature,
+        "max_output_tokens": request.max_tokens,
+        "stream": request.stream,
+    }
+    if request.response_format is not None:
+        body["text"] = {"format": dict(request.response_format)}
+    body.update(request.extra)
+    headers = {"Accept": "text/event-stream", "Content-Type": "application/json"}
+    if config.api_key:
+        headers["Authorization"] = f"Bearer {config.api_key}"
+    return _RequestSpec(
+        config.endpoint("/v1/responses"),
+        headers,
+        body,
+        "openai_responses",
+    )
+
+
+def _anthropic_spec(
+    config: DirectProtocolConfig,
+    request: CanonicalChatRequest,
+) -> _RequestSpec:
+    system_parts = []
+    messages = []
+    for message in request.messages:
+        role = str(message.get("role") or "")
+        if role in {"system", "developer"}:
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                system_parts.append(content.strip())
+            continue
+        rendered = dict(message)
+        if isinstance(rendered.get("content"), list):
+            rendered["content"] = _anthropic_content(rendered["content"])
+        messages.append(rendered)
+    body: dict[str, object] = {
+        "model": request.model,
+        "system": "\n\n".join(system_parts),
+        "messages": messages,
+        "temperature": request.temperature,
+        "max_tokens": request.max_tokens,
+        "stream": request.stream,
+    }
+    body.update(request.extra)
+    headers = {
+        "Accept": "text/event-stream",
+        "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01",
+    }
+    if config.api_key:
+        headers["x-api-key"] = config.api_key
+    return _RequestSpec(
+        config.endpoint("/v1/messages"),
+        headers,
+        body,
+        "anthropic_messages",
+    )
+
+
+_SPEC_BUILDERS = {
+    "openai_chat": _openai_chat_spec,
+    "ollama_chat": _ollama_spec,
+    "openai_responses": _responses_spec,
+    "anthropic_messages": _anthropic_spec,
+}
+
+
+class DirectProtocolClient:
+    def __init__(
+        self,
+        config: DirectProtocolConfig,
+        *,
+        client: Optional[httpx.AsyncClient] = None,
+    ) -> None:
+        self.config = config
+        self._client = client
+        self._owned_client: Optional[httpx.AsyncClient] = None
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        if self._client is not None:
+            return self._client
+        if self.config.ca_file or not self.config.verify_tls:
+            if self._owned_client is None or self._owned_client.is_closed:
+                verify: object = self.config.verify_tls
+                if self.config.ca_file:
+                    ca_path = Path(self.config.ca_file).expanduser()
+                    if not ca_path.is_file():
+                        raise DirectProtocolError(
+                            "configuration",
+                            "模型接口 CA 证书文件不存在。",
+                        )
+                    verify = str(ca_path)
+                self._owned_client = httpx.AsyncClient(
+                    timeout=httpx.Timeout(self.config.timeout_seconds, connect=10.0),
+                    follow_redirects=True,
+                    verify=verify,
+                    headers={"User-Agent": "MeaPet/1.0"},
+                )
+            return self._owned_client
+        from meapet.http_async import get_client
+
+        return await get_client()
+
+    async def close(self) -> None:
+        if self._owned_client is not None and not self._owned_client.is_closed:
+            await self._owned_client.aclose()
+        self._owned_client = None
+
+    async def stream(
+        self,
+        request: CanonicalChatRequest,
+    ) -> AsyncIterator[object]:
+        spec = _SPEC_BUILDERS[self.config.protocol](self.config, request)
+        client = await self._get_client()
+        try:
+            async with client.stream(
+                "POST",
+                spec.url,
+                headers=spec.headers,
+                json=spec.body,
+                timeout=self.config.timeout_seconds,
+            ) as response:
+                if response.status_code >= 400:
+                    raise _http_error(response.status_code)
+                content_type = response.headers.get("Content-Type", "").lower()
+                if spec.stream_kind == "ollama_chat":
+                    if "ndjson" not in content_type and "jsonl" not in content_type:
+                        raise DirectProtocolError(
+                            "protocol",
+                            "Ollama 未返回预期的 NDJSON 流。",
+                        )
+                    async for event in self._stream_ollama(response):
+                        yield event
+                else:
+                    if "text/event-stream" not in content_type:
+                        raise DirectProtocolError(
+                            "protocol",
+                            "模型接口未返回预期的 SSE 流。",
+                        )
+                    parser = {
+                        "openai_chat": self._stream_openai_chat,
+                        "openai_responses": self._stream_responses,
+                        "anthropic_messages": self._stream_anthropic,
+                    }[spec.stream_kind]
+                    async for event in parser(response):
+                        yield event
+        except DirectProtocolError:
+            raise
+        except (httpx.TimeoutException, asyncio.TimeoutError) as exc:
+            raise DirectProtocolError(
+                "timeout",
+                "模型响应超时，请稍后再试。",
+                True,
+            ) from exc
+        except httpx.RequestError as exc:
+            raise DirectProtocolError(
+                "connection",
+                "无法连接模型接口，请检查地址和网络。",
+                True,
+            ) from exc
+
+    @staticmethod
+    def _decode_json(data: str) -> Mapping[str, object]:
+        try:
+            payload = json.loads(data)
+        except json.JSONDecodeError as exc:
+            raise DirectProtocolError(
+                "protocol",
+                "模型流包含无法解析的数据。",
+            ) from exc
+        if not isinstance(payload, Mapping):
+            raise DirectProtocolError("protocol", "模型流包含无效的数据帧。")
+        return payload
+
+    async def _stream_openai_chat(
+        self,
+        response: httpx.Response,
+    ) -> AsyncIterator[object]:
+        done = False
+        async for sse in _iter_sse(response):
+            if sse.data.strip() == "[DONE]":
+                done = True
+                yield StreamDone()
+                break
+            payload = self._decode_json(sse.data)
+            if payload.get("error"):
+                raise DirectProtocolError("backend", "模型未能完成回复。")
+            choices = payload.get("choices")
+            if isinstance(choices, list) and choices:
+                choice = choices[0] if isinstance(choices[0], Mapping) else {}
+                delta = choice.get("delta")
+                if isinstance(delta, Mapping):
+                    reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                    if isinstance(reasoning, str) and reasoning:
+                        yield ReasoningDelta(reasoning)
+                    content = delta.get("content")
+                    if isinstance(content, str) and content:
+                        yield TextDelta(content)
+            usage = payload.get("usage")
+            if isinstance(usage, Mapping):
+                yield UsageEvent(dict(usage))
+        if not done:
+            raise DirectProtocolError("protocol", "模型 SSE 流意外结束。")
+
+    async def _stream_responses(
+        self,
+        response: httpx.Response,
+    ) -> AsyncIterator[object]:
+        done = False
+        async for sse in _iter_sse(response):
+            payload = self._decode_json(sse.data)
+            event_type = str(payload.get("type") or sse.event)
+            if event_type == "response.output_text.delta":
+                delta = payload.get("delta")
+                if isinstance(delta, str) and delta:
+                    yield TextDelta(delta)
+            elif event_type == "response.reasoning_text.delta":
+                delta = payload.get("delta")
+                if isinstance(delta, str) and delta:
+                    yield ReasoningDelta(delta)
+            elif event_type == "response.completed":
+                response_payload = payload.get("response")
+                if isinstance(response_payload, Mapping):
+                    usage = response_payload.get("usage")
+                    if isinstance(usage, Mapping):
+                        yield UsageEvent(dict(usage))
+                done = True
+                yield StreamDone()
+                break
+            elif event_type in {"error", "response.failed", "response.incomplete"}:
+                raise DirectProtocolError("backend", "模型未能完成回复。")
+        if not done:
+            raise DirectProtocolError("protocol", "Responses SSE 流意外结束。")
+
+    async def _stream_anthropic(
+        self,
+        response: httpx.Response,
+    ) -> AsyncIterator[object]:
+        done = False
+        async for sse in _iter_sse(response):
+            payload = self._decode_json(sse.data)
+            event_type = str(payload.get("type") or sse.event)
+            if event_type == "content_block_delta":
+                delta = payload.get("delta")
+                if not isinstance(delta, Mapping):
+                    continue
+                delta_type = str(delta.get("type") or "")
+                if delta_type == "text_delta":
+                    text = delta.get("text")
+                    if isinstance(text, str) and text:
+                        yield TextDelta(text)
+                elif delta_type == "thinking_delta":
+                    thinking = delta.get("thinking")
+                    if isinstance(thinking, str) and thinking:
+                        yield ReasoningDelta(thinking)
+            elif event_type == "message_delta":
+                usage = payload.get("usage")
+                if isinstance(usage, Mapping):
+                    yield UsageEvent(dict(usage))
+            elif event_type == "message_stop":
+                done = True
+                yield StreamDone()
+                break
+            elif event_type == "error":
+                raise DirectProtocolError("backend", "模型未能完成回复。")
+        if not done:
+            raise DirectProtocolError("protocol", "Anthropic SSE 流意外结束。")
+
+    async def _stream_ollama(
+        self,
+        response: httpx.Response,
+    ) -> AsyncIterator[object]:
+        done = False
+        async for line in response.aiter_lines():
+            if not line.strip():
+                continue
+            payload = self._decode_json(line)
+            if payload.get("error"):
+                raise DirectProtocolError("backend", "Ollama 未能完成回复。")
+            message = payload.get("message")
+            if isinstance(message, Mapping):
+                thinking = message.get("thinking")
+                if isinstance(thinking, str) and thinking:
+                    yield ReasoningDelta(thinking)
+                content = message.get("content")
+                if isinstance(content, str) and content:
+                    yield TextDelta(content)
+            if bool(payload.get("done")):
+                usage = {
+                    key: payload[key]
+                    for key in (
+                        "prompt_eval_count",
+                        "eval_count",
+                        "total_duration",
+                    )
+                    if key in payload
+                }
+                if usage:
+                    yield UsageEvent(usage)
+                done = True
+                yield StreamDone(str(payload.get("done_reason") or ""))
+                break
+        if not done:
+            raise DirectProtocolError("protocol", "Ollama NDJSON 流意外结束。")
