@@ -478,6 +478,11 @@ class PetRenderHostMixin:
         self._l2d_model = Live2DModel(model_dir)
         widget = self._l2d_model.create_widget(self)
         self.sprite_label = widget
+
+        # 【新增】强制父窗口透明，否则 SetWindowRgn 裁掉的区域会露出系统底色
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setStyleSheet("background: transparent; border: none;")
+
         widget.head_patted.connect(self._on_head_patted)
         widget.tail_patted.connect(self._on_tail_patted)
         widget.chat_requested.connect(self._start_chat)
@@ -717,22 +722,14 @@ class PetRenderHostMixin:
 
     def _set_rect_region(self, bx: int, by: int, bw: int, bh: int):
         """将窗口裁剪为紧密矩形区域。"""
-        if sys.platform == "win32":
-            try:
-                import win32gui
-                rgn = win32gui.CreateRectRgn(bx, by, bx + bw, by + bh)
-                if rgn:
-                    win32gui.SetWindowRgn(int(self.winId()), rgn, True)
-            except Exception as e:
-                safe_print(f"[WARN] Win32 rect region failed: {e}")
-                self._clear_window_region()
-        else:
-            try:
-                region = QRegion(bx, by, bw, bh)
-                self.setMask(region)
-            except Exception as e:
-                safe_print(f"[WARN] QRegion rect mask failed: {e}")
-                self._clear_window_region()
+        try:
+            # 【修改】统一使用 Qt 原生的 setMask，废弃 win32gui.SetWindowRgn
+            # Qt 底层会自动处理 Windows 的 WS_EX_LAYERED 和 DWM 兼容问题
+            region = QRegion(bx, by, bw, bh)
+            self.setMask(region)
+        except Exception as e:
+            safe_print(f"[WARN] QRegion rect mask failed: {e}")
+            self._clear_window_region()
 
     def _toggle_standby(self):
         self._standby = not self._standby

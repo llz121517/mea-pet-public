@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import sys
 import math
+import numpy as np #等着你这个死边框
 import traceback
 from pathlib import Path
 
@@ -36,7 +37,7 @@ if sys.platform == "win32":
         win32api = None
         win32con = None
 
-from PyQt5.QtGui import QBitmap, QRegion, QImage
+from PyQt5.QtGui import QBitmap, QRegion, QImage, qAlpha
 from PyQt5.QtCore import Qt
 
 
@@ -190,7 +191,7 @@ class Live2DWidget(QOpenGLWidget):
 
         #添加计数器
         self._mask_update_counter = 0
-        self._mask_update_interval = 10
+        self._mask_update_interval = 30
 
         self.resize(525, 735)
 
@@ -198,18 +199,13 @@ class Live2DWidget(QOpenGLWidget):
         # self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.installEventFilter(self)
 
+        self._mask_timer = QTimer(self)
+        self._mask_timer.timeout.connect(self._update_dynamic_mask)     # 低频更新mask
+        self._mask_timer.start(300)
+
     def eventFilter(self, obj, event):
-        if obj == self and event.type() in (
-            QEvent.MouseButtonPress,
-            QEvent.MouseButtonDblClick,
-        ):
-            if event.type() == QEvent.MouseButtonPress and event.button() == Qt.RightButton:
-                return False
-            x, y = event.x(), event.y()
-            w, h = self.width(), self.height()
-            if ((x / w - 0.5) * 2) ** 2 + ((y / h - 0.5) * 2) ** 2 <= 1:
-                return False
-            return True
+        # 【修复】移除强制拦截逻辑。
+        # 鼠标事件的穿透由操作系统的 setMask 决定，Qt 内部不应该再吞掉事件。
         return super().eventFilter(obj, event)
 
     def initializeGL(self):
@@ -328,61 +324,111 @@ class Live2DWidget(QOpenGLWidget):
             self.l2d.model.SetParameterValue("ParamBodyAngleZ", cx * 10, 1.0)
             self.l2d.model.SetParameterValue("ParamAngleZ", cx * 10, 1.0)
 
+        glClearColor(1.0, 0.0, 0.0, 0.3)
         self.l2d.model.Update()
         self.l2d.model.Draw()
         self._frame_drawn = True
-        self._mask_update_counter += 1
-        if self._mask_update_counter >= self._mask_update_interval:
-            self._mask_update_counter = 0
-            self._update_window_mask()
 
     def _on_frame_swapped(self):
         """只在 Qt 确认首帧已交换到屏幕后通知宿主显现。"""
         if self._frame_drawn and not self._first_frame_emitted:
             self._first_frame_emitted = True
             self.first_frame_ready.emit()
-    def _update_window_mask(self):
-        """根据渲染帧的 Alpha 通道更新窗口遮罩，首次计算紧密包围盒通知父窗口。"""
-        if not self._ready or not hasattr(self, 'l2d') or not self.l2d.model:
+    def _update_dynamic_mask(self):
+        """基于 NumPy 降采样的极速动态包围盒计算"""
+        if not self._ready or not self.l2d.model:
             return
 
         try:
-            img = self.grabFramebuffer()
-            if img.format() != QImage.Format_ARGB32:
-                img = img.convertToFormat(QImage.Format_ARGB32)
-            mask_img = img.createMaskFromColor(Qt.transparent, Qt.MaskOutColor)
-            bitmap = QBitmap.fromImage(mask_img)
-            region = QRegion(bitmap)
-            dpr = self.devicePixelRatio()
-            if dpr != 1.0:
-                scaled_size = self.size()
-                region = region.scaled(scaled_size.width(), scaled_size.height())
-            self.setMask(region)
+            w, h = self.width(), self.height()
+            if w <= 10 or h <= 10:
+                return
 
-            # 首次成功 → 计算紧密包围盒，通知父窗口裁切透明边框
+            # 1. 抓取当前帧 (GPU -> CPU)
+            # 注意：虽然 grabFramebuffer 有开销，但我们接下来会把它缩小，所以影响可控
+            full_img = self.grabFramebuffer()
+            # full_img.save("debug_grab_frame.png")
+            if full_img.isNull():
+                return
+
+            # 2. 【核心优化】降采样 (Downsampling)
+            # 将图像缩小到宽度只有 150 像素左右。
+            # 这会让像素数量减少几十倍，极大降低后续计算和回读的开销！
+            target_w = 150
+            scale_ratio = target_w / w
+            target_h = int(h * scale_ratio)
+        
+            small_img = full_img.scaled(target_w, target_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        
+            # 转换为 ARGB32 以便读取内存
+            if small_img.format() != QImage.Format_ARGB32:
+                small_img = small_img.convertToFormat(QImage.Format_ARGB32)
+
+            # 3. 使用 NumPy 极速提取 Alpha 通道
+            # 将 QImage 的内存直接映射为 NumPy 数组，零拷贝，速度极快
+            ptr = small_img.bits()
+            ptr.setsize(target_h * target_w * 4)
+            # ARGB32 在内存中是 B, G, R, A (小端序)，我们只取第 4 个通道 (Alpha)
+            arr = np.frombuffer(ptr, dtype=np.uint8).reshape((target_h, target_w, 4))
+            alpha_channel = arr[:, :, 3] 
+
+            # 4. 找出 Alpha > 15 的像素的边界 (15 是容差，过滤掉半透明抗锯齿边缘)
+            # np.any 是 C 语言级别的循环，比 Python for 循环快成百上千倍
+            rows_with_content = np.any(alpha_channel > 15, axis=1)
+            cols_with_content = np.any(alpha_channel > 15, axis=0)
+
+            if not np.any(rows_with_content) or not np.any(cols_with_content):
+                # 如果整张图都是透明的，清空 Mask
+                self.clearMask()
+                return
+
+            # 获取小图上的包围盒坐标
+            rmin, rmax = np.where(rows_with_content)[0][[0, -1]]
+            cmin, cmax = np.where(cols_with_content)[0][[0, -1]]
+
+            # 5. 映射回原始窗口尺寸
+            real_x = int(cmin / scale_ratio)
+            real_y = int(rmin / scale_ratio)
+            real_w = int((cmax - cmin) / scale_ratio)
+            real_h = int((rmax - rmin) / scale_ratio)
+
+            # 6. 【关键】向外扩展 10% 的余量 (Padding)
+            # 因为模型会动，300ms 内模型可能会有位移或形变，留出余量防止点击失效
+            pad_x = int(real_w * 0.1)
+            pad_y = int(real_h * 0.1)
+        
+            final_x = max(0, real_x - pad_x)
+            final_y = max(0, real_y - pad_y)
+            final_w = min(w - final_x, real_w + 2 * pad_x)
+            final_h = min(h - final_y, real_h + 2 * pad_y)
+
+            #=====================为防止冲突=============================
+            # 7. 应用矩形 Mask
+            # 我们不需要多边形，一个紧紧包裹住模型当前动作的矩形就足够完美了
+            # mask_region = QRegion(final_x, final_y, final_w, final_h)
+        
+            # 只有当 Mask 发生明显变化时才更新，避免无意义的 Qt 重绘
+            # if self.mask() != mask_region:
+            #     self.setMask(mask_region)
+            #======================此处废除===========================
+
+            # 8. 通知父窗口裁切 (仅首次)
             if not self._tight_bounds_emitted:
-                bounds = region.boundingRect()
-                if bounds.width() > 20 and bounds.height() > 20:
-                    self._tight_bounds_emitted = True
-                    bx, by, bw, bh = (
-                        bounds.x(), bounds.y(),
-                        bounds.width(), bounds.height(),
-                    )
-                    QTimer.singleShot(
-                        0,
-                        lambda bx=bx, by=by, bw=bw, bh=bh: self.tight_bounds_ready.emit(
-                            bx, by, bw, bh
-                        ),
-                    )
+                self._tight_bounds_emitted = True
+                QTimer.singleShot(0, lambda: self.tight_bounds_ready.emit(
+                    final_x, final_y, final_w, final_h
+                ))
 
         except Exception as e:
-            log.warn(f"[Live2D] 像素级掩码更新失败: {e}")
-            self.clearMask()
+            log.warn(f"[Live2D] 动态掩码更新失败: {e}")
+            # 失败时保底使用整个窗口，防止模型消失
+            self.setMask(QRegion(0, 0, self.width(), self.height()))
 
     def _on_timer(self):
         self.update()
 
     def mousePressEvent(self, event):
+        
         super().mousePressEvent(event)
         # 仅当左键按下时，记录初始位置
         if event.button() == Qt.LeftButton:
