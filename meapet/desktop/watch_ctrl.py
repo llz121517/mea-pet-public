@@ -6,6 +6,7 @@ import random
 import time
 
 from meapet.desktop import status_language
+from meapet.desktop.audio import bubble_duration_for_audio
 from meapet.desktop.chat_input import set_awaiting_reply_state
 from meapet.utils import (
     cloud_vision_allowed,
@@ -265,9 +266,10 @@ class PetWatcherMixin:
         wav_path = raw.rsplit("|", 1)[0] if "|" in raw else raw
         # reply/mood 由调用方 _poll_tts 直接传入，不再从 _pending_reply 重复读取
         audio_duration_ms = self._get_wav_duration_ms(wav_path) if wav_path else 0
-        bubble_ms = self.config["bubble_duration_ms"]["watch"]
-        if self.config["tts"]["sync_with_audio"]:
-            bubble_ms = max(audio_duration_ms + 500, bubble_ms)
+        bubble_ms = bubble_duration_for_audio(
+            audio_duration_ms,
+            self.config["bubble_duration_ms"]["watch"],
+        )
         self.show_reply(reply, mood, duration_ms=bubble_ms)
         set_awaiting_reply_state(self, False)
         self._start_watcher_timer()

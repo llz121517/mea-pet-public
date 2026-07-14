@@ -90,7 +90,7 @@
     "voice_clone": false,
     "clone_ref": "",
     "clone_dir": "./voice_cache",
-    "sync_with_audio": false
+    "sync_with_audio": true
   },
   "display": {
     "scale": 0.5,

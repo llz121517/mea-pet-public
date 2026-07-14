@@ -45,6 +45,7 @@ from meapet.conversation.types import (
     normalize_voice_language,
 )
 from meapet.desktop import status_language
+from meapet.desktop.audio import bubble_duration_for_audio
 from meapet.desktop.workers import AgentChatWorker, ChatWorker, TTSWorker
 from meapet.desktop.chat_input import ChatInputBox, set_awaiting_reply_state
 from meapet.log import get_color_logger
@@ -985,10 +986,15 @@ class PetChatFlowMixin:
                 # 空结果同样必须进入完成处理，以显示等待中的文字回复。
                 self._on_tts_audio(result)
         if hasattr(self, '_speak_worker') and self._speak_worker and self._speak_worker.done:
-            result = self._speak_worker.get_result()
+            try:
+                result = self._speak_worker.get_result()
+            except Exception as exc:
+                log.error(
+                    f"[speak] 读取互动语音结果失败: {type(exc).__name__}"
+                )
+                result = None
             self._speak_worker = None
-            if result:
-                self._on_speak_audio_ready(result)
+            self._on_speak_audio_ready(result)
         if hasattr(self, '_watch_tts_worker') and self._watch_tts_worker and self._watch_tts_worker.done:
             result = self._watch_tts_worker.get_result()
             self._watch_tts_worker = None
@@ -1101,15 +1107,13 @@ class PetChatFlowMixin:
         reply, mood = pending
         duration_ms = None
         config = getattr(self, "config", {}) or {}
-        tts_config = config.get("tts") or {}
         bubble_config = config.get("bubble_duration_ms") or {}
-        if wav_path and tts_config.get("sync_with_audio"):
+        if wav_path:
             audio_ms = self._get_wav_duration_ms(wav_path)
-            if audio_ms > 0:
-                duration_ms = max(
-                    audio_ms + 500,
-                    int(bubble_config.get("reply", 3000)),
-                )
+            duration_ms = bubble_duration_for_audio(
+                audio_ms,
+                bubble_config.get("reply", 3000),
+            )
 
         try:
             if duration_ms is None:
@@ -1224,43 +1228,63 @@ class PetChatFlowMixin:
         self._complete_turn_context(context)
 
     def _speak_and_show(self, text: str, duration_ms: int, mood: str = "neutral"):
-        """显示文字 + 后台合成语音播放（异常不抛出）"""
-        try:
-            self.show_reply(text, mood)
-        except Exception as e:
-            log.error(f"[speak] 显示文字失败: {type(e).__name__}: {e}")
+        """互动语音准备好后再同时显示气泡和播放；失败则回退文字。"""
         try:
             tts = getattr(self, "tts", None)
-            if tts and getattr(tts, "enabled", False) and len((text or "").strip()) >= 2:
-                self._current_speaking_text = text
-                cached = None
-                try:
-                    cached = tts.get_cached(text)
-                except Exception as e:
-                    log.error(f"[speak] 缓存查询失败: {type(e).__name__}: {e}")
-                if cached:
-                    self._play_audio(cached)
-                    return
-                self._speak_worker = TTSWorker(tts, text, mood=mood)
-                self._speak_worker.start()
-                self._ensure_tts_poll()
+            if (
+                tts is None
+                or not getattr(tts, "enabled", False)
+                or len((text or "").strip()) < 2
+            ):
+                self.show_reply(text, mood, duration_ms=duration_ms)
+                return
+            self._current_speaking_text = text
+            cached = None
+            try:
+                cached = tts.get_cached(text)
+            except Exception as e:
+                log.error(f"[speak] 缓存查询失败: {type(e).__name__}: {e}")
+            if cached and os.path.exists(cached):
+                bubble_ms = bubble_duration_for_audio(
+                    self._get_wav_duration_ms(cached),
+                    duration_ms,
+                )
+                self.show_reply(text, mood, duration_ms=bubble_ms)
+                self._play_audio(cached)
+                return
+            self._pending_speak_reply = (text, duration_ms, mood)
+            self._speak_worker = TTSWorker(tts, text, mood=mood)
+            self._speak_worker.start()
+            self._ensure_tts_poll()
         except Exception as e:
             log.error(f"[speak] 语音合成启动失败: {type(e).__name__}: {e}")
+            self._pending_speak_reply = None
+            try:
+                self.show_reply(text, mood, duration_ms=duration_ms)
+            except Exception as display_exc:
+                log.error(
+                    "[speak] 文字兜底显示失败: "
+                    f"{type(display_exc).__name__}: {display_exc}"
+                )
 
-    def _on_speak_audio_ready(self, raw: str):
-        """后台语音合成完成，播放并缓存"""
-        wav_path = raw
+    def _on_speak_audio_ready(self, raw: str | None):
+        """后台互动语音完成：气泡与音频同时开始，气泡最后结束。"""
+        pending = getattr(self, "_pending_speak_reply", None)
+        self._pending_speak_reply = None
+        wav_path = str(raw or "")
         tts_lang = ""
-        if "|" in raw:
-            parts = raw.rsplit("|", 1)
+        if "|" in wav_path:
+            parts = wav_path.rsplit("|", 1)
             wav_path = parts[0]
             tts_lang = parts[1]
-        if wav_path and os.path.exists(wav_path):
+        valid_audio = bool(wav_path and os.path.exists(wav_path))
+        if valid_audio:
             # 缓存：用语言前缀统一命名
             if tts_lang:
                 safe = self._safe_name(
-                    self._current_speaking_text
-                    if hasattr(self, "_current_speaking_text") else ""
+                    pending[0]
+                    if pending is not None
+                    else getattr(self, "_current_speaking_text", "")
                 )
                 if safe:
                     from meapet.paths import project_path
@@ -1271,6 +1295,16 @@ class PetChatFlowMixin:
                         shutil.copy2(wav_path, cache_path)
                     except Exception:
                         pass
+        if pending is not None:
+            text, minimum_ms, mood = pending
+            bubble_ms = minimum_ms
+            if valid_audio:
+                bubble_ms = bubble_duration_for_audio(
+                    self._get_wav_duration_ms(wav_path),
+                    minimum_ms,
+                )
+            self.show_reply(text, mood, duration_ms=bubble_ms)
+        if valid_audio:
             self._play_audio(wav_path)
 
     def show_reply(self, text: str, mood: str = "neutral", duration_ms: int = None):

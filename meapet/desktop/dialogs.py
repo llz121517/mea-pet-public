@@ -305,6 +305,7 @@ class CaptureScopeConsentDialog(QDialog):
         self.auto_cancelled = False
         self._explicit_allow = False
         self.approval: CaptureApproval | None = None
+        self._countdown_disabled = False
         self._countdown_pause_reasons: set[str] = set()
         self._selection_in_progress = False
         self._refresh_in_progress = False
@@ -433,6 +434,7 @@ class CaptureScopeConsentDialog(QDialog):
         self.countdown_label.setObjectName("ConsentCountdown")
         self.countdown_label.setAccessibleName("自动取消倒计时")
         layout.addWidget(self.countdown_label)
+        self._update_countdown()
 
         buttons = QHBoxLayout()
         buttons.setSpacing(8)
@@ -463,10 +465,12 @@ class CaptureScopeConsentDialog(QDialog):
         requested = str(requested_scope or "full_screen").strip().lower()
         index = self.scope_combo.findData(requested)
         self.scope_combo.setCurrentIndex(index if index >= 0 else 0)
+        self._last_activated_scope = (
+            self.scope_combo.currentData() or "full_screen"
+        )
         self.scope_combo.currentIndexChanged.connect(self._sync_scope)
         self.scope_combo.activated.connect(self._scope_activated)
         self._sync_scope()
-        self._update_countdown()
         self._resize_to_content()
 
     @property
@@ -482,14 +486,30 @@ class CaptureScopeConsentDialog(QDialog):
         self._countdown_pause_reasons.discard(str(reason or "selection"))
         self._update_countdown()
         if (
-            not self.countdown_paused
+            not self._countdown_disabled
+            and not self.countdown_paused
             and self.isVisible()
             and self.remaining_seconds > 0
         ):
             self._timer.start()
 
+    def _disable_countdown(self) -> None:
+        """用户已主动参与范围选择后，不再用五秒超时打断确认。"""
+        if self._countdown_disabled:
+            return
+        self._countdown_disabled = True
+        self._timer.stop()
+        self.countdown_label.setAccessibleDescription(
+            "用户已手动更改截图方式，自动取消倒计时已关闭"
+        )
+        self.countdown_label.hide()
+        self._resize_to_content()
+
     def _scope_activated(self, index: int) -> None:
         scope = self.scope_combo.itemData(index) or "full_screen"
+        if scope != self._last_activated_scope:
+            self._disable_countdown()
+        self._last_activated_scope = scope
         if scope == "region":
             QTimer.singleShot(0, self._choose_region)
         elif scope == "application":
@@ -643,6 +663,11 @@ class CaptureScopeConsentDialog(QDialog):
         compact_height = int(getattr(self, "_compact_height", 0) or 0)
         if compact_height > 0:
             target_height = compact_height
+            if self.countdown_label.isHidden():
+                target_height -= (
+                    self.countdown_label.sizeHint().height()
+                    + self._content_layout.spacing()
+                )
             scope = self.scope_combo.currentData() or "full_screen"
             if scope == "region":
                 target_height += (
@@ -659,9 +684,18 @@ class CaptureScopeConsentDialog(QDialog):
                     self.validation_label.sizeHint().height()
                     + self._content_layout.spacing()
                 )
+        target_height = max(
+            target_height,
+            self.minimumHeight(),
+            self.minimumSizeHint().height(),
+        )
         self.resize(self.width(), target_height)
 
     def _update_countdown(self) -> None:
+        if self._countdown_disabled:
+            self.countdown_label.hide()
+            return
+        self.countdown_label.show()
         if self.countdown_paused:
             self.countdown_label.setText(
                 f"正在选择截图范围，倒计时已暂停（剩余 {self.remaining_seconds} 秒）。"
@@ -676,7 +710,11 @@ class CaptureScopeConsentDialog(QDialog):
         )
 
     def _tick(self) -> None:
-        if self.countdown_paused or self.remaining_seconds <= 0:
+        if (
+            self._countdown_disabled
+            or self.countdown_paused
+            or self.remaining_seconds <= 0
+        ):
             return
         self.remaining_seconds -= 1
         if self.remaining_seconds <= 0:
@@ -744,7 +782,7 @@ class CaptureScopeConsentDialog(QDialog):
                 y = min(max(y, available.top()), max_y)
             self.move(x, y)
         self.cancel_button.setFocus(Qt.OtherFocusReason)
-        if not self.countdown_paused:
+        if not self._countdown_disabled and not self.countdown_paused:
             self._timer.start()
         scope = self.scope_combo.currentData() or "full_screen"
         if scope == "region" and not self._selection_in_progress:

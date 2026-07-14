@@ -501,12 +501,9 @@ def normalize_config(config: dict) -> dict:
     ui["timeline_turns"] = max(0, min(timeline_turns, 100))
     cfg["ui"] = ui
 
-    # TTS：音频同步 + 可选固定 GPT-SoVITS 参考音频
+    # TTS：有音频时气泡始终晚于播放结束；旧开关仅保留配置兼容。
     tts = cfg.get("tts") if isinstance(cfg.get("tts"), dict) else {}
-    if "sync_with_audio" not in tts:
-        tts["sync_with_audio"] = False
-    else:
-        tts["sync_with_audio"] = bool(tts["sync_with_audio"])
+    tts["sync_with_audio"] = True
     tts["gsv_ref_wav"] = str(tts.get("gsv_ref_wav") or "").strip()
     tts["gsv_ref_lang"] = normalize_gsv_ref_language(
         tts.get("gsv_ref_lang")
