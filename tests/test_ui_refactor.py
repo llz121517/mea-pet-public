@@ -1321,7 +1321,29 @@ class UiRefactorTests(unittest.TestCase):
         )
         QApplication.processEvents()
         self.assertFalse(dialog.region_frame.isHidden())
-        self.assertGreater(dialog.height(), compact_height)
+        self.assertGreater(
+            dialog.height(),
+            compact_height,
+            {
+                "dialog_size_hint": dialog.sizeHint().height(),
+                "outer_total_hint": dialog._outer_layout.totalSizeHint().height(),
+                "content_hint": dialog._content_layout.sizeHint().height(),
+                "region_hint": dialog.region_frame.sizeHint().height(),
+                "region_height": dialog.region_frame.height(),
+            },
+        )
+
+        dialog.scope_combo.setCurrentIndex(
+            dialog.scope_combo.findData("application")
+        )
+        QApplication.processEvents()
+        application_height = dialog.height()
+        self.assertFalse(dialog.application_frame.isHidden())
+        self.assertGreater(application_height, compact_height)
+        dialog.allow_button.click()
+        QApplication.processEvents()
+        self.assertFalse(dialog.validation_label.isHidden())
+        self.assertGreater(dialog.height(), application_height)
 
         dialog.scope_combo.setCurrentIndex(
             dialog.scope_combo.findData("full_screen")

@@ -374,6 +374,14 @@ class CaptureScopeConsentDialog(QDialog):
         buttons.addWidget(self.cancel_button, 1)
         layout.addLayout(buttons)
 
+        # 先在所有可选面板隐藏时记录稳定的紧凑高度。后续显隐按该基线
+        # 显式加上面板高度，避免窗口管理器忽略同一事件循环内的 sizeHint。
+        self.region_frame.hide()
+        self.application_frame.hide()
+        self._compact_height = 0
+        self._resize_to_content()
+        self._compact_height = self.height()
+
         requested = str(requested_scope or "full_screen").strip().lower()
         index = self.scope_combo.findData(requested)
         self.scope_combo.setCurrentIndex(index if index >= 0 else 0)
@@ -416,6 +424,25 @@ class CaptureScopeConsentDialog(QDialog):
         target_height = self._outer_layout.totalSizeHint().height()
         if target_height <= 0:
             target_height = self.sizeHint().height()
+        compact_height = int(getattr(self, "_compact_height", 0) or 0)
+        if compact_height > 0:
+            target_height = compact_height
+            scope = self.scope_combo.currentData() or "full_screen"
+            if scope == "region":
+                target_height += (
+                    self.region_frame.sizeHint().height()
+                    + self._content_layout.spacing()
+                )
+            elif scope == "application":
+                target_height += (
+                    self.application_frame.sizeHint().height()
+                    + self._content_layout.spacing()
+                )
+            if not self.validation_label.isHidden():
+                target_height += (
+                    self.validation_label.sizeHint().height()
+                    + self._content_layout.spacing()
+                )
         self.resize(self.width(), target_height)
 
     def _update_countdown(self) -> None:
