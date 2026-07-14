@@ -91,6 +91,20 @@ class TestWizardConversationConfig(unittest.TestCase):
             },
             "sprite_dir": "D:/custom/sprites",
             "plugin_config": {"enabled": True, "value": 42},
+            "tts": {
+                "engine": "gpt_sovits",
+                "enabled": False,
+                "sync_with_audio": True,
+                "custom_tts_key": "keep-tts",
+            },
+            "vision": {
+                "mode": "disabled",
+                "custom_vision_key": "keep-vision",
+            },
+            "watcher": {
+                "enabled": False,
+                "custom_watcher_key": "keep-watcher",
+            },
         }
         self.wizard.font_scale_slider.setValue(125)
         self.wizard.reduced_motion_cb.setChecked(True)
@@ -113,6 +127,16 @@ class TestWizardConversationConfig(unittest.TestCase):
         self.assertEqual(
             config["plugin_config"],
             {"enabled": True, "value": 42},
+        )
+        self.assertTrue(config["tts"]["sync_with_audio"])
+        self.assertEqual(config["tts"]["custom_tts_key"], "keep-tts")
+        self.assertEqual(
+            config["vision"]["custom_vision_key"],
+            "keep-vision",
+        )
+        self.assertEqual(
+            config["watcher"]["custom_watcher_key"],
+            "keep-watcher",
         )
 
     def test_agent_validation_continues_through_tts_and_vision(self):
@@ -335,6 +359,11 @@ class TestWizardConversationConfig(unittest.TestCase):
                 "collect_config",
                 return_value=payload,
             ),
+            unittest.mock.patch.object(
+                self.wizard,
+                "_configuration_issues",
+                return_value={index: [] for index in range(4)},
+            ),
             unittest.mock.patch("wizard.app.os.path.isfile", return_value=False),
             unittest.mock.patch("meapet.config.store.save_config"),
             unittest.mock.patch("wizard.app.QMessageBox.information"),
@@ -398,6 +427,63 @@ class TestWizardConversationConfig(unittest.TestCase):
                 wizard._save()
 
             self.assertEqual(save.call_args.args[1], str(path))
+
+    def test_save_uses_latest_disk_values_for_fields_outside_the_ui(self):
+        from wizard.app import SetupWizard
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "profile.json"
+            path.write_text(
+                '{"plugin_config":{"revision":1},'
+                '"llm":{"mode":"direct","backend":"ollama",'
+                '"direct":{"provider":"ollama",'
+                '"protocol":"ollama_chat",'
+                '"host":"http://127.0.0.1:11434",'
+                '"api_base":"","model":"qwen3.5:4b",'
+                '"api_key":"","temperature":0.7,"max_tokens":512}},'
+                '"tts":{"enabled":false,"engine":"gpt_sovits"}}',
+                encoding="utf-8",
+            )
+            wizard = SetupWizard(config_path=str(path))
+            self.addCleanup(wizard.deleteLater)
+            wizard._load_timer.stop()
+            wizard.llm_page._status_timer.stop()
+            wizard.env_page._check_timer.stop()
+            for timer in wizard.tts_page._startup_timers:
+                timer.stop()
+            wizard._load_existing_config()
+
+            path.write_text(
+                '{"plugin_config":{"revision":2,"external":true},'
+                '"live2d":{"enabled":false,"scale":0.41},'
+                '"llm":{"mode":"direct","backend":"ollama",'
+                '"direct":{"provider":"ollama",'
+                '"protocol":"ollama_chat",'
+                '"host":"http://127.0.0.1:11434",'
+                '"api_base":"","model":"qwen3.5:4b",'
+                '"api_key":"","temperature":0.7,"max_tokens":512}},'
+                '"tts":{"enabled":false,"engine":"gpt_sovits"}}',
+                encoding="utf-8",
+            )
+
+            with (
+                unittest.mock.patch.object(
+                    wizard,
+                    "_configuration_issues",
+                    return_value={index: [] for index in range(4)},
+                ),
+                unittest.mock.patch("meapet.config.store.save_config") as save,
+                unittest.mock.patch("wizard.app.QMessageBox.information"),
+            ):
+                wizard._save()
+
+            saved = save.call_args.args[0]
+            self.assertEqual(
+                saved["plugin_config"],
+                {"revision": 2, "external": True},
+            )
+            self.assertFalse(saved["live2d"]["enabled"])
+            self.assertEqual(saved["live2d"]["scale"], 0.41)
 
     def test_dirty_window_confirms_before_discarding_changes(self):
         self.wizard.show()

@@ -18,7 +18,6 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
 
 from wizard.styles import (
-    COLOR_OK,
     MIN_TARGET_SIZE,
     STYLE_PAGE_CARD,
     set_status,
@@ -32,6 +31,7 @@ from wizard.env_utils import (
 # 兼容页面内可能使用的短名
 class EnvCheckPage(QFrame):
     ui_call = pyqtSignal(object)
+    requirements_changed = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -62,6 +62,10 @@ class EnvCheckPage(QFrame):
         # 检测结果列表（按平台动态生成）
         self.items = {}  # name -> (label, status_label, btn, hint)
         self._checklist = platform_checklist()
+        self._required_names = tuple(
+            name for name, _hint, required in self._checklist if required
+        )
+        self._check_results = {}
         for name, hint, _required in self._checklist:
             row = QHBoxLayout()
             name_label = QLabel(name)
@@ -151,6 +155,16 @@ class EnvCheckPage(QFrame):
         else:
             set_status(status, "error", text or "缺失")
             btn.show()
+        self._check_results[name] = bool(ok)
+        self.requirements_changed.emit()
+
+    def required_missing(self) -> list[str]:
+        """返回已经完成检测且确认缺失的必需环境项。"""
+        return [
+            f"{name} 环境"
+            for name in self._required_names
+            if self._check_results.get(name) is False
+        ]
 
     def _run_checks(self):
         """执行检测；配置页销毁期间到达的状态更新应安全终止。"""

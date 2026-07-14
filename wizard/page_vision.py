@@ -1,37 +1,22 @@
 """配置向导各页面"""
 from __future__ import annotations
 
-import json
-import os
-import re
-import sys
-import threading
-import time
-import urllib.request
-from typing import Optional, Dict, Any, List
-
-from PyQt5.QtWidgets import *
-from PyQt5.QtCore import (
-    Qt,
-    QSignalBlocker,
-    QTimer,
-    QThread,
-    pyqtSignal,
-    QObject,
-    QSize,
-    QUrl,
+from PyQt5.QtCore import QSignalBlocker
+from PyQt5.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QSpinBox,
+    QVBoxLayout,
 )
-from PyQt5.QtGui import *
 
 from wizard.styles import (
-    STYLE_INPUT, STYLE_BTN_PRIMARY, STYLE_BTN_SECONDARY,
-    COLOR_BG, COLOR_CARD, COLOR_ACCENT, COLOR_TEXT, COLOR_OK, COLOR_WARN, COLOR_ERR,
-    STYLE_PAGE_CARD, set_status,
-)
-from wizard.platform_info import PLATFORM, CONFIG_PATH, platform_checklist, ollama_install_hint, detect_platform
-from wizard.env_utils import (
-    WorkerSignals, pip_install, check_installed, download_file,
-    check_ollama_running, check_ollama_installed, pull_ollama_model,
+    STYLE_INPUT,
+    STYLE_PAGE_CARD,
+    set_status,
 )
 
 # 兼容页面内可能使用的短名
@@ -81,6 +66,7 @@ class VisionPage(QFrame):
         )
         layout.addWidget(self.mode_combo)
         self.advanced_toggle = QCheckBox("显示高级识图选项")
+        self.advanced_toggle.setProperty("doesNotModifyConfig", True)
         self.advanced_toggle.setChecked(False)
         self.advanced_toggle.setAccessibleName("显示高级识图选项")
         layout.addWidget(self.advanced_toggle)

@@ -1,28 +1,24 @@
 """配置向导各页面"""
 from __future__ import annotations
 
-import json
 import os
-import re
-import sys
-import threading
-import time
-import urllib.request
-from typing import Optional, Dict, Any, List
 
-from PyQt5.QtWidgets import *
-from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject, QSize, QUrl
-from PyQt5.QtGui import *
+from PyQt5.QtCore import QTimer
+from PyQt5.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QVBoxLayout,
+)
 
 from wizard.styles import (
-    STYLE_INPUT, STYLE_BTN_PRIMARY, STYLE_BTN_SECONDARY,
-    COLOR_BG, COLOR_CARD, COLOR_ACCENT, COLOR_TEXT, COLOR_OK, COLOR_WARN, COLOR_ERR,
-    MIN_TARGET_SIZE, STYLE_PAGE_CARD,
-)
-from wizard.platform_info import PLATFORM, CONFIG_PATH, platform_checklist, ollama_install_hint, detect_platform
-from wizard.env_utils import (
-    WorkerSignals, pip_install, check_installed, download_file,
-    check_ollama_running, check_ollama_installed, pull_ollama_model,
+    MIN_TARGET_SIZE,
+    STYLE_INPUT,
+    STYLE_PAGE_CARD,
 )
 
 # 兼容页面内可能使用的短名
@@ -61,6 +57,7 @@ class TTSPage(TtsPageGsvMixin, TtsPageMimoMixin, TtsPageVitsMixin, QFrame):
         self.engine_details_toggle = QCheckBox("显示引擎详细设置")
         self.engine_details_toggle.setChecked(False)
         self.engine_details_toggle.setAccessibleName("显示引擎详细设置")
+        self.engine_details_toggle.setProperty("doesNotModifyConfig", True)
         self.engine_details_toggle.setToolTip("关闭后只保留总开关，适合先开玩再细调")
         self.engine_details_toggle.toggled.connect(self._sync_engine_details_visibility)
         layout.addWidget(self.engine_details_toggle)

@@ -1,34 +1,37 @@
 """配置向导各页面"""
 from __future__ import annotations
 
-import json
-import os
-import re
-import sys
-import threading
-import time
-import urllib.request
-from typing import Optional, Dict, Any, List
-
-from PyQt5.QtWidgets import *
-from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject, QSize, QUrl
-from PyQt5.QtGui import *
+from PyQt5.QtCore import QTimer
+from PyQt5.QtWidgets import (
+    QComboBox,
+    QDoubleSpinBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QRadioButton,
+    QSpinBox,
+    QVBoxLayout,
+)
 
 from wizard.styles import (
-    STYLE_INPUT, STYLE_BTN_PRIMARY, STYLE_BTN_SECONDARY,
-    COLOR_BG, COLOR_CARD, COLOR_ACCENT, COLOR_TEXT, COLOR_OK, COLOR_WARN, COLOR_ERR,
-    STYLE_PAGE_CARD, set_status,
+    STYLE_INPUT,
+    STYLE_PAGE_CARD,
+    set_status,
 )
-from wizard.platform_info import PLATFORM, CONFIG_PATH, platform_checklist, ollama_install_hint, detect_platform
 from wizard.env_utils import (
-    WorkerSignals, pip_install, check_installed, download_file,
-    check_ollama_running, check_ollama_installed, pull_ollama_model,
+    check_ollama_installed,
+    check_ollama_running,
 )
 
 # 兼容页面内可能使用的短名
 class LLMPage(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._provider_drafts = {}
+        self._active_provider = None
+        self._suspend_provider_switch = False
         self.setObjectName("PageCard")
         self.setStyleSheet(STYLE_PAGE_CARD)
         layout = QVBoxLayout(self)
@@ -125,16 +128,34 @@ class LLMPage(QFrame):
         self.model_input.setAccessibleName("直连模型 ID")
         direct_layout.addWidget(self.model_input)
 
-        key_label = QLabel("API Key / 环境变量占位符（可空）：")
-        key_label.setObjectName("FieldLabel")
-        direct_layout.addWidget(key_label)
+        self.direct_key_label = QLabel(
+            "API Key / 环境变量占位符（可空）："
+        )
+        self.direct_key_label.setObjectName("FieldLabel")
+        direct_layout.addWidget(self.direct_key_label)
         self.direct_api_key_input = QLineEdit()
         self.direct_api_key_input.setObjectName("DirectApiKey")
         self.direct_api_key_input.setStyleSheet(STYLE_INPUT)
         self.direct_api_key_input.setEchoMode(QLineEdit.Password)
         self.direct_api_key_input.setAccessibleName("直连 API Key")
+        self.direct_api_key_input.setAccessibleDescription(
+            "凭据只会保存到本机配置文件，也可填写环境变量占位符"
+        )
         self.direct_api_key_input.setPlaceholderText("例如 $MEAPET_API_KEY")
-        direct_layout.addWidget(self.direct_api_key_input)
+        key_row = QHBoxLayout()
+        key_row.addWidget(self.direct_api_key_input, 1)
+        self.direct_api_key_visibility = QPushButton("显示 Key")
+        self.direct_api_key_visibility.setCheckable(True)
+        self.direct_api_key_visibility.setAccessibleName("显示直连 API Key")
+        self.direct_api_key_visibility.setProperty(
+            "doesNotModifyConfig",
+            True,
+        )
+        self.direct_api_key_visibility.toggled.connect(
+            self._toggle_api_key_visibility
+        )
+        key_row.addWidget(self.direct_api_key_visibility)
+        direct_layout.addLayout(key_row)
 
         tuning = QHBoxLayout()
         tuning.addWidget(QLabel("temperature"))
@@ -216,56 +237,119 @@ class LLMPage(QFrame):
     def _on_provider_selected(self, checked: bool = True) -> None:
         if not checked:
             return
-        provider = self.get_backend()
-        presets = {
-            "ollama": (
-                "ollama_chat",
-                "http://127.0.0.1:11434",
-                "qwen3.5:4b",
-            ),
-            "deepseek": (
-                "openai_chat",
-                "https://api.deepseek.com/v1",
-                "deepseek-v4-flash",
-            ),
-            "mimo": (
-                "openai_chat",
-                "https://api.xiaomimimo.com/v1",
-                "mimo-v2.5",
-            ),
-        }
-        if provider not in presets:
+        if self._suspend_provider_switch:
             return
-        protocol, endpoint, model = presets[provider]
+        provider = self.get_backend()
+        if self._active_provider == provider:
+            return
+        if self._active_provider:
+            self._provider_drafts[self._active_provider] = (
+                self.collect_direct_profile()
+            )
+        profile = self._provider_drafts.get(provider)
+        if profile is None:
+            profile = self._default_profile(provider)
+        self._apply_profile_fields(profile)
+        self._sync_provider_copy(provider)
+        self._active_provider = provider
+
+    def _sync_provider_copy(self, provider: str) -> None:
+        required = provider in {"deepseek", "mimo"}
+        suffix = "必填" if required else "可空"
+        self.direct_key_label.setText(
+            f"API Key / 环境变量占位符（{suffix}）："
+        )
+
+    @staticmethod
+    def _default_profile(provider: str) -> dict:
+        presets = {
+            "ollama": {
+                "protocol": "ollama_chat",
+                "endpoint": "http://127.0.0.1:11434",
+                "model": "qwen3.5:4b",
+            },
+            "deepseek": {
+                "protocol": "openai_chat",
+                "endpoint": "https://api.deepseek.com/v1",
+                "model": "deepseek-v4-flash",
+            },
+            "mimo": {
+                "protocol": "openai_chat",
+                "endpoint": "https://api.xiaomimimo.com/v1",
+                "model": "mimo-v2.5",
+            },
+            "custom": {
+                "protocol": "openai_chat",
+                "endpoint": "",
+                "model": "",
+            },
+        }
+        preset = presets.get(provider, presets["custom"])
+        protocol = preset["protocol"]
+        endpoint = preset["endpoint"]
+        return {
+            "provider": provider,
+            "protocol": protocol,
+            "api_base": "" if protocol == "ollama_chat" else endpoint,
+            "host": endpoint if protocol == "ollama_chat" else "",
+            "model": preset["model"],
+            "api_key": "",
+            "temperature": 0.7,
+            "max_tokens": 512,
+        }
+
+    def _apply_profile_fields(self, profile: dict) -> None:
+        protocol = str(profile.get("protocol") or "openai_chat")
         self.set_protocol(protocol)
-        self.endpoint_input.setText(endpoint)
-        self.model_input.setText(model)
-
-    def set_protocol(self, protocol: str) -> None:
-        index = self.protocol_combo.findData(str(protocol or "").strip())
-        if index >= 0:
-            self.protocol_combo.setCurrentIndex(index)
-
-    def apply_direct_profile(self, profile: dict) -> None:
-        profile = profile or {}
-        self.set_backend(profile.get("provider", "ollama"))
-        self.set_protocol(profile.get("protocol", "ollama_chat"))
         endpoint = (
             profile.get("host")
-            if profile.get("protocol") == "ollama_chat"
+            if protocol == "ollama_chat"
             else profile.get("api_base")
         )
         self.endpoint_input.setText(str(endpoint or ""))
         self.model_input.setText(str(profile.get("model") or ""))
         self.direct_api_key_input.setText(str(profile.get("api_key") or ""))
         try:
-            self.temperature_input.setValue(float(profile.get("temperature", 0.7)))
+            self.temperature_input.setValue(
+                float(profile.get("temperature", 0.7))
+            )
         except (TypeError, ValueError):
             self.temperature_input.setValue(0.7)
         try:
-            self.max_tokens_input.setValue(int(profile.get("max_tokens", 512)))
+            self.max_tokens_input.setValue(
+                int(profile.get("max_tokens", 512))
+            )
         except (TypeError, ValueError):
             self.max_tokens_input.setValue(512)
+
+    def set_protocol(self, protocol: str) -> None:
+        index = self.protocol_combo.findData(str(protocol or "").strip())
+        if index >= 0:
+            self.protocol_combo.setCurrentIndex(index)
+
+    def _toggle_api_key_visibility(self, visible: bool) -> None:
+        self.direct_api_key_input.setEchoMode(
+            QLineEdit.Normal if visible else QLineEdit.Password
+        )
+        self.direct_api_key_visibility.setText(
+            "隐藏 Key" if visible else "显示 Key"
+        )
+        self.direct_api_key_visibility.setAccessibleName(
+            "隐藏直连 API Key" if visible else "显示直连 API Key"
+        )
+
+    def apply_direct_profile(self, profile: dict) -> None:
+        profile = profile or {}
+        self._suspend_provider_switch = True
+        try:
+            self.set_backend(profile.get("provider", "ollama"))
+            self._apply_profile_fields(profile)
+            provider = self.get_backend()
+            self._sync_provider_copy(provider)
+            self._active_provider = provider
+            self._provider_drafts[provider] = self.collect_direct_profile()
+        finally:
+            self._suspend_provider_switch = False
 
     def collect_direct_profile(self, api_key: str = "") -> dict:
         protocol = self.protocol_combo.currentData() or "openai_chat"
@@ -280,8 +364,3 @@ class LLMPage(QFrame):
             "temperature": self.temperature_input.value(),
             "max_tokens": self.max_tokens_input.value(),
         }
-
-
-# ═══════════════════════════════════════
-# 页面：API Key
-# ═══════════════════════════════════════

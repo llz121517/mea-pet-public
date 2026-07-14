@@ -10,6 +10,7 @@
 ## Backend
 
 - 直连页明确选择 Ollama Chat、OpenAI Chat、OpenAI Responses 或 Anthropic Messages，不把 OpenAI-compatible 端点称为 Agent。
+- 直连协议、地址、模型与 Key 只有一组可编辑控件；切换服务商时分别保留各自未保存草稿。
 - Agent 页支持 Hermes 与 OpenClaw，恢复上次会话；新会话由「清除记忆」确认流程创建。
 - 本地时间线默认 5 轮，可设 0–100；帮助文案说明按后端和 Agent 会话隔离。
 - 配置保存后运行中热应用。失败时使用中性系统文案，不泄露响应正文。
@@ -34,5 +35,12 @@
 
 ## Display
 
-- 字体缩放即时预览
-- 减少动画写入 `display.reduced_motion`
+- 字体缩放在配置页即时预览，桌宠重启后完整应用。
+- 减少动画写入 `display.reduced_motion`，保存后由运行时立即应用。
+
+## Persistence and validation
+
+- 配置页跟随桌宠当前使用的配置路径；从模板启动时保存到同目录 `config.json`。
+- 保存采用字段补丁：只覆盖页面实际负责的字段，Live2D、角色、窗口比例、气泡时长和未知扩展字段原样保留。
+- 缺少必要配置时允许用户明确确认后保存；直接关闭包含未保存编辑的窗口时先确认是否丢弃。
+- 环境检测、对话、语音和识图的缺项都会同步到标签红点与顶部文字状态。
