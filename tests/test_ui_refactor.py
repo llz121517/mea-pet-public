@@ -1250,12 +1250,25 @@ class UiRefactorTests(unittest.TestCase):
     def test_capture_consent_lets_user_override_scope_for_this_request_only(self) -> None:
         from meapet.desktop.dialogs import CaptureScopeConsentDialog
 
+        holder = {}
+
+        def select_region(_parent, _initial_region):
+            dialog = holder["dialog"]
+            self.assertTrue(dialog.countdown_paused)
+            before = dialog.remaining_seconds
+            dialog._tick()
+            self.assertEqual(dialog.remaining_seconds, before)
+            return {"x": -120, "y": 40, "width": 1280, "height": 720}
+
         dialog = self._track(
             CaptureScopeConsentDialog(
                 requested_scope="full_screen",
                 timeout_seconds=15,
+                region_selector=select_region,
+                window_provider=lambda: (),
             )
         )
+        holder["dialog"] = dialog
         self.assertEqual(dialog.scope_combo.currentData(), "full_screen")
         self.assertEqual(dialog.countdown_label.text(), "15 秒后自动取消。")
         dialog._tick()
@@ -1263,12 +1276,14 @@ class UiRefactorTests(unittest.TestCase):
         dialog.scope_combo.setCurrentIndex(
             dialog.scope_combo.findData("region")
         )
-        dialog.region_x.setValue(-120)
-        dialog.region_y.setValue(40)
-        dialog.region_width.setValue(1280)
-        dialog.region_height.setValue(720)
 
         dialog.show()
+        QApplication.processEvents()
+        remaining = dialog.remaining_seconds
+        dialog.select_region_button.click()
+        self.assertEqual(dialog.remaining_seconds, remaining)
+        self.assertFalse(dialog.countdown_paused)
+        self.assertIn("1280 × 720", dialog.region_summary.text())
         dialog._timer.stop()
         dialog.allow_button.click()
 
@@ -1279,6 +1294,51 @@ class UiRefactorTests(unittest.TestCase):
             {"x": -120, "y": 40, "width": 1280, "height": 720},
         )
         self.assertEqual(dialog.approval.application, "")
+
+    def test_capture_consent_lists_windows_and_pauses_during_refresh(self) -> None:
+        from meapet.desktop.dialogs import CaptureScopeConsentDialog
+        from meapet.watcher.capture import CaptureWindow
+
+        holder = {}
+
+        def windows():
+            dialog = holder["dialog"]
+            self.assertTrue(dialog.countdown_paused)
+            before = dialog.remaining_seconds
+            dialog._tick()
+            self.assertEqual(dialog.remaining_seconds, before)
+            return (
+                CaptureWindow(101, "main.py - Visual Studio Code", "Code.exe", 10),
+                CaptureWindow(202, "项目 - 记事本", "notepad.exe", 20),
+            )
+
+        dialog = self._track(
+            CaptureScopeConsentDialog(
+                timeout_seconds=5,
+                region_selector=lambda _parent, _initial: None,
+                window_provider=windows,
+            )
+        )
+        holder["dialog"] = dialog
+        dialog.show()
+        QApplication.processEvents()
+        remaining = dialog.remaining_seconds
+        index = dialog.scope_combo.findData("application")
+        dialog.scope_combo.setCurrentIndex(index)
+        dialog.scope_combo.activated.emit(index)
+
+        self.assertEqual(dialog.remaining_seconds, remaining)
+        self.assertFalse(dialog.countdown_paused)
+        self.assertEqual(dialog.application_combo.count(), 2)
+        self.assertIn("Code.exe", dialog.application_combo.itemText(0))
+        self.assertFalse(hasattr(dialog, "application_input"))
+        dialog.application_combo.setCurrentIndex(1)
+        dialog._timer.stop()
+        dialog.allow_button.click()
+
+        self.assertEqual(dialog.result(), QDialog.Accepted)
+        self.assertEqual(dialog.approval.scope, "application")
+        self.assertEqual(dialog.approval.application, "项目 - 记事本")
 
     def test_cloud_capture_consent_includes_scope_and_uses_five_seconds(self) -> None:
         from meapet.desktop.dialogs import CloudCaptureScopeConsentDialog
@@ -1302,12 +1362,10 @@ class UiRefactorTests(unittest.TestCase):
             "QDialog#CaptureScopeConsentRoot",
             "QFrame#SectionCard",
             "QComboBox",
-            "QLineEdit",
-            "QSpinBox",
+            "QPushButton#SelectRegionButton",
+            "QPushButton#RefreshWindowsButton",
             "QLabel#ConsentValidation",
             "QComboBox::down-arrow",
-            "QSpinBox::up-arrow",
-            "QSpinBox::down-arrow",
         ):
             with self.subTest(selector=selector):
                 self.assertIn(selector, stylesheet)
