@@ -54,3 +54,5 @@ Thumbs.db
 # 构建产物
 mea_pet.egg-info/
 dist/
+build/
+debug_grab_frame.png
