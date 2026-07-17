@@ -14,6 +14,8 @@ a = Analysis(
         ('config.example.json', '.'),
     ],
     hiddenimports=[
+        # certifi CA bundle (belt-and-suspenders for httpx SSL verification)
+        'certifi',
         # wizard package (dynamically imported from _reopen_setup_wizard)
         'wizard.app',
         'wizard.pages',

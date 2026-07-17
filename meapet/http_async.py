@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import atexit
+import ssl
 from typing import Any, Dict, Optional
 
 import httpx
@@ -16,9 +17,17 @@ _client: Optional[httpx.AsyncClient] = None
 
 
 def _new_client() -> httpx.AsyncClient:
+    """Create a shared async HTTP client.
+
+    Uses ``ssl.create_default_context()`` so that the OS-native certificate
+    store (Schannel on Windows) is used for HTTPS verification.  This avoids
+    relying on ``certifi.where()`` which can point to a non-existent
+    ``cacert.pem`` inside a PyInstaller bundle.
+    """
     return httpx.AsyncClient(
         timeout=httpx.Timeout(120.0, connect=10.0),
         follow_redirects=True,
+        verify=ssl.create_default_context(),
         headers={"User-Agent": "MeaPet/0.1"},
     )
 

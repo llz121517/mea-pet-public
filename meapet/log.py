@@ -9,8 +9,14 @@ from pathlib import Path
 
 # ====================== 全局配置项 ======================
 LOG_LEVEL = "TRACK"           # 默认含可见对话/TTS 文本；协议级调试仅在 LOG_LEVEL = "TRACK" 时输出
-# 日志路径固定到项目根目录，不受从快捷方式或其它目录启动的 cwd 影响。
-LOG_DIR = str(Path(__file__).resolve().parent.parent / "logs")
+
+# 日志路径：在 PyInstaller 打包模式下 __file__ 指向只读临时目录，
+# 因此使用 get_data_dir() 重定向到 ~/.meapet/logs/。
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    from meapet.paths import get_data_dir as _get_data_dir
+    LOG_DIR = os.path.join(_get_data_dir(), "logs")
+else:
+    LOG_DIR = str(Path(__file__).resolve().parent.parent / "logs")
 LOG_KEEP_DAYS = 7            # 保留最近几天的日志文件
 # ====================================================
 

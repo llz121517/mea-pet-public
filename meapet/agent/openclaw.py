@@ -9,6 +9,7 @@ import json
 import locale
 import platform as runtime_platform
 import ssl
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,7 +41,7 @@ from meapet.conversation.output_protocol import (
     ProtocolCompleted,
     SegmentCompleted,
 )
-from meapet.paths import project_path
+from meapet.paths import get_data_dir, project_path
 
 
 _PROTOCOL_VERSION = 4
@@ -293,9 +294,14 @@ class OpenClawAdapter:
 
     def _get_identity(self) -> OpenClawDeviceIdentity:
         if self._identity is None:
-            path = self.config.identity_path or str(
-                project_path("openclaw_device_identity.json")
-            )
+            if self.config.identity_path:
+                path = self.config.identity_path
+            elif getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+                # 在 PyInstaller 打包模式下 project_path 指向只读 _MEIPASS，
+                # 重定向到 ~/.meapet/ 以保证设备身份可持久化。
+                path = str(Path(get_data_dir()) / "openclaw_device_identity.json")
+            else:
+                path = str(project_path("openclaw_device_identity.json"))
             self._identity = OpenClawDeviceIdentity.load_or_create(path)
         return self._identity
 
