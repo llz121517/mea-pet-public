@@ -215,28 +215,23 @@ class ScreenWatcher(QThread):
     progress = pyqtSignal(str)
     search_request = pyqtSignal(str)  # 请求 Web 搜索（关键词）
 
-    def __init__(self, ollama_host: str = "http://127.0.0.1:11434",
+    def __init__(self,
+                 api_base: str = "",
                  vision_model: str = "minicpm-v",
                  chat_model: str = "qwen2.5:7b",
                  idle_minutes: float = 0,
-                 # MiMo 后端参数
-                 backend: str = "ollama",
-                 api_base: str = "",
                  api_key: str = "",
-                 mimo_model: str = "mimo-v2.5",
                  mode: str = "relay",
                  capture_scope: str = "full_screen",
                  capture_region: dict | None = None,
                  capture_application: str = ""):
         super().__init__()
-        self.host = ollama_host
+        # 统一使用 api_base，不再区分 ollama_host 和 api_base
+        self.api_base = api_base.rstrip('/') if api_base else "http://127.0.0.1:11434"
         self.vision_model = vision_model
         self.chat_model = chat_model
         self.idle_minutes = idle_minutes
-        self.backend = backend
-        self.api_base = api_base.rstrip('/')
         self.api_key = api_key
-        self.mimo_model = mimo_model
         self.mode = str(mode or "disabled").strip().lower()
         self.capture_scope = str(capture_scope or "full_screen").strip().lower()
         self.capture_region = (
@@ -292,7 +287,8 @@ class ScreenWatcher(QThread):
 
 
     @staticmethod
-    def _mimo_extract_text(message: dict) -> str:
+    def _extract_text(message: dict) -> str:
+        """从 OpenAI 兼容的 message 中提取文本（兼容 content 为 list 的情况）。"""
         content = (message or {}).get("content") or ""
         if isinstance(content, list):
             parts = []
@@ -326,70 +322,77 @@ class ScreenWatcher(QThread):
             timeout=float(timeout) + 30,
         )
 
-    def _request_visual_observation(self, image_base64: str) -> str:
-        """仅 relay 模式调用：独立视觉模型只产生观察 JSON。"""
-        if self.backend == "mimo":
+    def _openai_chat(self, messages: list, max_tokens: int = 2048, temperature: float = 0.3, timeout: int = 180) -> str:
+        """统一 OpenAI 兼容聊天请求，返回 content 文本。"""
+        try:
             headers = {
-                "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
             }
             if self.api_key:
-                headers["api-key"] = self.api_key
-            response = self._http_post(
+                headers["Authorization"] = f"Bearer {self.api_key}"
+            log.info(f"[openai_chat] sending {len(messages)} messages, max_tokens={max_tokens}")
+            resp = self._http_post(
                 f"{self.api_base}/chat/completions",
                 headers=headers,
                 json={
-                    "model": self.mimo_model,
-                    "messages": [
+                    "model": self.vision_model,
+                    "messages": messages,
+                    "max_tokens": max(int(max_tokens or 0), 2048),
+                    "temperature": temperature,
+                },
+                timeout=timeout,
+            )
+            log.info(f"[openai_chat] response status={resp.status_code}")
+            if resp.status_code == 200:
+                msg = (resp.json().get("choices") or [{}])[0].get("message") or {}
+                text = self._extract_text(msg)
+                log.info(f"[openai_chat] extracted text length={len(text)}")
+                rc = (msg.get("reasoning_content") or "").strip()
+                log.info(
+                    f"[openai_chat] content_len={len(text)} "
+                    f"reasoning_len={len(rc)}"
+                )
+                return text
+            body = (resp.text or "").replace("\n", " ").strip()
+            log.warning(
+                f"[openai_chat] HTTP {resp.status_code} "
+                f"model={self.vision_model} body_len={len(body)}"
+            )
+            log.debug(f"[openai_chat] error body: {body[:500]}")
+            return ""
+        except Exception as e:
+            log.error(f"[openai_chat] error: {type(e).__name__}: {e!r}")
+            return ""
+
+    def _request_visual_observation(self, image_base64: str) -> str:
+        """仅 relay 模式调用：独立视觉模型只产生观察 JSON。"""
+        response = self._openai_chat(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "只输出用户要求的视觉观察 JSON。",
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": RELAY_OBSERVATION_PROMPT},
                         {
-                            "role": "system",
-                            "content": "只输出用户要求的视觉观察 JSON。",
-                        },
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": RELAY_OBSERVATION_PROMPT},
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": (
-                                            "data:image/jpeg;base64,"
-                                            f"{image_base64}"
-                                        )
-                                    },
-                                },
-                            ],
+                            "type": "image_url",
+                            "image_url": {
+                                "url": (
+                                    "data:image/jpeg;base64,"
+                                    f"{image_base64}"
+                                )
+                            },
                         },
                     ],
-                    "max_tokens": 1200,
-                    "max_completion_tokens": 1200,
-                    "temperature": 0.1,
-                    "stream": False,
                 },
-                timeout=600,
-            )
-            if response.status_code != 200:
-                raise RuntimeError(f"vision relay HTTP {response.status_code}")
-            message = (
-                (response.json().get("choices") or [{}])[0].get("message")
-                or {}
-            )
-            return self._mimo_extract_text(message)
-
-        response = self._http_post(
-            f"{self.host}/api/generate",
-            json={
-                "model": self.vision_model,
-                "prompt": RELAY_OBSERVATION_PROMPT,
-                "images": [image_base64],
-                "stream": False,
-                "options": {"num_predict": 600, "temperature": 0.1},
-            },
+            ],
+            max_tokens=1200,
+            temperature=0.1,
             timeout=600,
         )
-        if response.status_code != 200:
-            raise RuntimeError(f"vision relay HTTP {response.status_code}")
-        return str(response.json().get("response") or "").strip()
+        return response
 
     def _emit_vision_reply(self, reply) -> None:
         if reply.silent:
@@ -517,52 +520,6 @@ class ScreenWatcher(QThread):
         self._search_pending = False
         self._search_result = result
 
-    def _mimo_chat(self, messages: list, max_tokens: int = 2048, temperature: float = 0.3, timeout: int = 180) -> str:
-        """调用 MiMo 聊天补全 API，返回 content 文本（httpx 异步客户端）"""
-        try:
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            }
-            # 与 TTS 对齐：部分网关只认 api-key
-            if self.api_key:
-                headers["api-key"] = self.api_key
-            log.info(f"[mimo_chat] sending {len(messages)} messages, max_tokens={max_tokens}")
-            resp = self._http_post(
-                f"{self.api_base}/chat/completions",
-                headers=headers,
-                json={
-                    "model": self.mimo_model,
-                    "messages": messages,
-                    "max_tokens": max(int(max_tokens or 0), 2048),
-                    "max_completion_tokens": max(int(max_tokens or 0), 2048),
-                    "temperature": temperature,
-                    "thinking": {"type": "enabled"},
-                },
-                timeout=timeout,
-            )
-            log.info(f"[mimo_chat] response status={resp.status_code}")
-            if resp.status_code == 200:
-                msg = (resp.json().get("choices") or [{}])[0].get("message") or {}
-                text = self._mimo_extract_text(msg)
-                log.info(f"[mimo_chat] extracted text length={len(text)}")
-                rc = (msg.get("reasoning_content") or "").strip()
-                log.info(
-                    f"[mimo_chat] content_len={len(text)} "
-                    f"reasoning_len={len(rc)}"
-                )
-                return text
-            body = (resp.text or "").replace("\n", " ").strip()
-            log.warning(
-                f"[mimo_chat] HTTP {resp.status_code} "
-                f"model={self.mimo_model} body_len={len(body)}"
-            )
-            log.debug(f"[mimo_chat] error body: {body[:500]}")
-            return ""
-        except Exception as e:
-            log.error(f"[mimo_chat] error: {type(e).__name__}: {e!r}")
-            return ""
-
     def _guess_mood(self, text: str, strategy: str = "", idle_minutes: float = 0) -> str:
         if idle_minutes > 30:
             return "melancholy"
@@ -583,3 +540,4 @@ class ScreenWatcher(QThread):
         if any(w in text for w in ["哼", "……", "懒得"]):
             return "melancholy"
         return "neutral"
+

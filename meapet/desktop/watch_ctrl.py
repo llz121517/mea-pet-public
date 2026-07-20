@@ -19,8 +19,7 @@ from meapet.desktop.dialogs import (
 )
 from meapet.config.store import (
     resolve_vision_api_base,
-    resolve_vision_backend,
-    resolve_vision_host,
+    # resolve_vision_backend 和 resolve_vision_host 已移除
 )
 from meapet.log import get_color_logger
 from meapet.vision.policy import resolve_vision_route
@@ -46,11 +45,7 @@ class PetWatcherMixin:
         ms = random.randint(min_ms, max_ms)
         self._watcher_timer.start(ms)
 
-
-    def _vision_backend(self) -> str:
-        vision_cfg = self.config.get("vision", {}) or {}
-        llm_cfg = self.config.get("llm", {}) or {}
-        return resolve_vision_backend(vision_cfg, llm_cfg)
+    # 移除 _vision_backend 方法，不再需要
 
     def _vision_route(self):
         return resolve_vision_route(
@@ -59,36 +54,15 @@ class PetWatcherMixin:
         )
 
     def _vision_endpoint(self) -> str:
-        """返回识图请求的实际目标地址。"""
+        """返回识图请求的实际目标地址，统一使用 api_base。"""
         vision_cfg = self.config.get("vision", {}) or {}
         llm_cfg = self.config.get("llm", {}) or {}
-        if self._vision_route().mode == "inherit":
-            if str(llm_cfg.get("mode") or "direct").lower() == "agent":
-                agent = llm_cfg.get("agent") or {}
-                return str(agent.get("base_url") or "")
-            direct = llm_cfg.get("direct") or {}
-            protocol = str(direct.get("protocol") or "").lower()
-            if protocol == "ollama_chat":
-                return str(
-                    direct.get("host")
-                    or llm_cfg.get("host")
-                    or "http://127.0.0.1:11434"
-                )
-            return str(direct.get("api_base") or llm_cfg.get("api_base") or "")
-        if self._vision_backend() == "mimo":
-            return resolve_vision_api_base(vision_cfg, llm_cfg)
-        return resolve_vision_host(vision_cfg, llm_cfg)
+        # 统一返回 resolve_vision_api_base，不再区分 inherit/relay 和 backend
+        return resolve_vision_api_base(vision_cfg, llm_cfg)
 
     def _is_cloud_vision(self) -> bool:
-        """判断截图是否会离开本机；未知或远程目标按云端处理。"""
-        if self._vision_route().mode == "inherit":
-            return not is_loopback_url(self._vision_endpoint())
-        backend = self._vision_backend()
-        if backend == "mimo":
-            return True
-        if backend == "ollama":
-            return not is_loopback_url(self._vision_endpoint())
-        return True
+        """判断截图是否会离开本机：仅根据 endpoint 是否为回环地址。"""
+        return not is_loopback_url(self._vision_endpoint())
 
     def _confirm_cloud_capture(self, force: bool = False) -> bool:
         """Gate before every cloud screenshot. Always ask; no session skip."""
@@ -155,7 +129,8 @@ class PetWatcherMixin:
                 self._start_watcher_timer()
                 return
         else:
-            log.info(f"[watcher] local vision backend={self._vision_backend()} (no upload)")
+            # 不再区分 backend，统一显示为 local
+            log.info("[watcher] local vision (no upload)")
 
         if not self._watcher.prepare_start():
             log.warning("[watcher] capture thread is still running")
@@ -375,3 +350,4 @@ class PetWatcherMixin:
             if hasattr(self, "_watcher_timer") and self._watcher_timer:
                 self._watcher_timer.stop()
             self._show_bubble("屏幕观察已关闭喵", 2500)
+

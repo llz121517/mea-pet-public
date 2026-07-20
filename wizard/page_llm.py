@@ -26,31 +26,21 @@ from wizard.styles import (
 from wizard.widgets import WheelSafeComboBox
 
 
-# Common path suffixes to strip before appending /models or /api/tags
-_MODEL_ENDPOINT_SUFFIXES = (
-    "/v1/chat/completions",
-    "/v1/completions",
-    "/chat/completions",
-    "/completions",
-)
-
-
-def _detect_provider_from_url(url: str) -> str:
-    """Infer the provider name from the endpoint URL for env-var resolution."""
-    lowered = (url or "").strip().lower()
-    if "deepseek" in lowered:
-        return "deepseek"
-    if "xiaomimimo" in lowered or "mimo.mi.com" in lowered:
-        return "mimo"
-    if "11434" in lowered or "localhost" in lowered or "127.0.0.1" in lowered:
-        return "ollama"
-    return "custom"
+# 改：移除了 _MODEL_ENDPOINT_SUFFIXES 和 _detect_provider_from_url 函数
+# 不再需要根据 URL 推断 provider，全部统一为 custom
 
 
 def _normalize_base_url(url: str) -> str:
-    """Strip common chat endpoint suffixes so /models or /api/tags can be appended."""
+    """Strip common chat endpoint suffixes so /models can be appended."""
     lowered = url.strip().lower()
-    for suffix in _MODEL_ENDPOINT_SUFFIXES:
+    # 改：只保留 /v1/models 所需的清理
+    suffixes = (
+        "/v1/chat/completions",
+        "/v1/completions",
+        "/chat/completions",
+        "/completions",
+    )
+    for suffix in suffixes:
         if lowered.endswith(suffix):
             base = url[: -len(suffix)]
             return base.rstrip("/") + "/"
@@ -58,17 +48,13 @@ def _normalize_base_url(url: str) -> str:
 
 
 class LLMPage(QFrame):
-    """Unified OpenAI-compatible connection configuration page.
-
-    Replaces the old 4-radio-button provider selector with a simple form:
-    Base URL, Model (with auto-fetch), API Key, Temperature, Max tokens.
-    """
+    """Unified OpenAI-compatible connection configuration page."""
 
     models_fetched = pyqtSignal(list, str)  # model_names, error_message
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._provider_override = None  # optional explicit provider selection
+        # 改：移除 _provider_override 属性
         self._fetch_running = False
         self.setObjectName("PageCard")
         self.setStyleSheet(STYLE_PAGE_CARD)
@@ -261,29 +247,17 @@ class LLMPage(QFrame):
         layout.addStretch()
 
         # Signals
-        self.endpoint_input.textEdited.connect(self._clear_provider_override)
+        # 改：移除 _clear_provider_override 的连接
         self.fetch_models_btn.clicked.connect(self._start_fetch_models)
         self.models_fetched.connect(self._apply_fetched_models)
 
-    # ── Provider auto-detection ──────────────────────────────
+    # ── Provider (always custom) ─────────────────────────────
 
+    # 改：移除 get_backend、set_backend、_clear_provider_override 方法
+    # 新增一个简单的 get_backend 返回固定值
     def get_backend(self) -> str:
-        """Return the resolved provider name for config storage."""
-        if self._provider_override:
-            return self._provider_override
-        return _detect_provider_from_url(self.endpoint_input.text())
-
-    def set_backend(self, backend: str) -> None:
-        """Explicitly select a provider.
-
-        The explicit selection lasts until the user edits the API address.
-        """
-        backend = (backend or "custom").lower()
-        self._provider_override = backend
-
-    def _clear_provider_override(self, _endpoint: str) -> None:
-        """Let a user-edited address choose its provider automatically."""
-        self._provider_override = None
+        """Always returns 'custom' — no backend detection."""
+        return "custom"
 
     # ── Fetch models ─────────────────────────────────────────
 
@@ -311,7 +285,7 @@ class LLMPage(QFrame):
         thread.start()
 
     def _fetch_models_worker(self, base_url: str, api_key: str) -> None:
-        """Background worker: try GET /v1/models, fallback to /api/tags."""
+        """Background worker: try GET /v1/models only. No Ollama fallback."""
         names = []
         error = ""
 
@@ -324,7 +298,7 @@ class LLMPage(QFrame):
             if api_key.startswith("sk-") or "Bearer" not in headers:
                 headers["Authorization"] = f"Bearer {api_key}"
 
-        # Try OpenAI-compatible /v1/models first
+        # Try OpenAI-compatible /v1/models
         try:
             url = urljoin(norm_url, "models")
             req = urllib.request.Request(url, headers=headers)
@@ -340,7 +314,6 @@ class LLMPage(QFrame):
                         ]
                         names = [n for n in names if n]
         except urllib.error.HTTPError as e:
-            # 401/403 means auth needed — try without auth or move on
             if e.code in (401, 403):
                 error = f"需要鉴权（HTTP {e.code}），请填写有效的 API Key 后重试"
             else:
@@ -379,35 +352,7 @@ class LLMPage(QFrame):
             except Exception as e:
                 error = str(e)[:120] or type(e).__name__
 
-        # Fallback: try Ollama /api/tags
-        if not names:
-            try:
-                ollama_url = urljoin(
-                    base_url.rstrip("/") + "/", "../api/tags"
-                )
-                # If that resolved to the same domain, also try direct /api/tags
-                if "../api" in ollama_url:
-                    ollama_url = ollama_url.replace("../api", "api")
-                req = urllib.request.Request(ollama_url)
-                with urllib.request.urlopen(req, timeout=15) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    if isinstance(data, dict):
-                        models_raw = data.get("models") or []
-                        if isinstance(models_raw, list):
-                            names = [
-                                m.get("name") or ""
-                                for m in models_raw
-                                if isinstance(m, dict)
-                            ]
-                            names = [n for n in names if n]
-                if names:
-                    error = ""  # clear any prior error
-            except urllib.error.HTTPError:
-                pass  # expected if not Ollama
-            except urllib.error.URLError:
-                pass
-            except Exception:
-                pass
+        # 改：移除 Ollama /api/tags fallback
 
         if not names and not error:
             error = "未能获取到模型列表，请检查地址是否正确。也可手动输入模型名称。"
@@ -460,10 +405,10 @@ class LLMPage(QFrame):
         protocol = "openai_chat"
         endpoint = self.endpoint_input.text().strip()
         return {
-            "provider": self.get_backend(),
+            "provider": "custom",  # 改：固定为 custom
             "protocol": protocol,
             "api_base": endpoint,
-            "host": "",  # always use api_base with openai_chat
+            "host": "",
             "model": self.model_combo.currentText().strip(),
             "api_key": str(api_key or self.direct_api_key_input.text()).strip(),
             "temperature": self.temperature_input.value(),
@@ -471,12 +416,7 @@ class LLMPage(QFrame):
         }
 
     def apply_direct_profile(self, profile: dict) -> None:
-        """Restore form fields from a previously saved profile.
-
-        Provider is deliberately derived from the address after restore.  A
-        restored provider must not pin a later user-edited address to its old
-        backend.
-        """
+        """Restore form fields from a previously saved profile."""
         profile = profile or {}
         endpoint = profile.get("api_base") or profile.get("host") or ""
         self.endpoint_input.setText(str(endpoint))
@@ -505,3 +445,4 @@ class LLMPage(QFrame):
         self.api_key_visibility.setAccessibleName(
             "隐藏 API Key" if visible else "显示 API Key"
         )
+
