@@ -40,8 +40,6 @@ from meapet.config.store import (
     resolve_startup_config_path,
     resolve_vision_api_base,
     resolve_vision_api_key,
-    resolve_vision_backend,
-    resolve_vision_host,
 )
 from meapet.config.checker import check_config_lines
 
@@ -282,7 +280,7 @@ class MeaPet(
         else:
             self.agent_adapter = None
             self.chat_engine = create_engine_from_config(self.config, self.memory)
-            if self.chat_engine.backend == "ollama" and self.chat_engine.available:
+            if self.chat_engine.available:
                 QTimer.singleShot(2000, self._show_warmup_status)
         conversation_key = self._refresh_conversation_key()
         if mode == "agent":
@@ -369,52 +367,25 @@ class MeaPet(
         vision_cfg = self.config.get("vision", {}) or {}
         vision_mode = str(vision_cfg.get("mode") or "disabled").strip().lower()
 
-        backend = resolve_vision_backend(vision_cfg, llm_cfg)
-        vision_model = vision_cfg.get("model") or (
-            "mimo" if backend == "mimo" else "qwen3.5:4b"
-        )
-        if backend == "mimo":
-            mimo_model = (
-                vision_cfg.get("model")
-                if vision_cfg.get("model")
-                and vision_cfg.get("model") not in ("mimo", "qwen3.5:4b")
-                else llm_cfg.get("model", "mimo-v2.5")
-            )
-            if not mimo_model or mimo_model in ("mimo", "qwen3.5:4b"):
-                mimo_model = llm_cfg.get("model", "mimo-v2.5")
-        else:
-            mimo_model = llm_cfg.get("model", "mimo-v2.5")
-
         api_key = resolve_vision_api_key(vision_cfg, llm_cfg)
         api_base = resolve_vision_api_base(vision_cfg, llm_cfg)
-        if backend == "mimo":
-            try:
-                from meapet.config.store import normalize_mimo_model_id
-                mimo_model = normalize_mimo_model_id(mimo_model, for_vision=True)
-            except Exception:
-                if not mimo_model or mimo_model in ("mimo", "qwen3.5:4b") or str(mimo_model).startswith("XiaomiMiMo/"):
-                    mimo_model = "mimo-v2.5"
-        ollama_host = resolve_vision_host(vision_cfg, llm_cfg)
+        vision_model = vision_cfg.get("model") or "qwen3.5:4b"
 
         log.info(
-            f"[watcher] 视觉路由: mode={vision_mode} backend={backend} "
-            f"model={vision_model if backend != 'mimo' else mimo_model} "
+            f"[watcher] 视觉路由: mode={vision_mode} model={vision_model} "
             f"allow_cloud={self.config.get('watcher', {}).get('allow_cloud', False)}"
         )
         self._watcher = ScreenWatcher(
-            ollama_host=ollama_host,
-            vision_model=vision_model if backend != "mimo" else mimo_model,
-            chat_model=vision_model if backend != "mimo" else mimo_model,
-            backend=backend,
             api_base=api_base,
+            vision_model=vision_model,
+            chat_model=vision_model,
             api_key=api_key,
-            mimo_model=mimo_model,
             mode=vision_mode,
-            # watcher 截图范围由每次五秒授权框决定；初始始终为全屏。
             capture_scope="full_screen",
             capture_region=None,
             capture_application="",
         )
+
         self._watcher.result_ready.connect(self._on_watch_result)
         self._watcher.error.connect(self._on_watch_error)
         self._watcher.silent.connect(self._on_watch_silent)
